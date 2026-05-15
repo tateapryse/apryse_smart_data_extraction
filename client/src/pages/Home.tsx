@@ -137,7 +137,6 @@ function JSONViewer({ data }: { data: Record<string, unknown> }) {
       <div className="flex items-center gap-4 text-sm text-muted-foreground px-1">
         <span className="flex items-center gap-1.5">
           <FileSearch className="w-3.5 h-3.5 text-primary" />
-          <strong className="text-foreground">{meaningfulPairs.length}</strong> key-value pairs extracted
           <span className="text-muted-foreground/60">({allPairs.length} total elements across {pages.length} pages)</span>
         </span>
         {!!meta?.engine && (
@@ -249,6 +248,7 @@ function InsightSkeleton() {
 // ─── Main Page ────────────────────────────────────────────────────────────────
 export default function Home() {
   const [uploadedFile, setUploadedFile] = useState<File | null>(null);
+  const [uploadedFileUrl, setUploadedFileUrl] = useState<string | null>(null);
   const [isDragging, setIsDragging] = useState(false);
   const [extractionResult, setExtractionResult] = useState<ExtractionResult | null>(null);
   const [aiAnalysis, setAiAnalysis] = useState<AIAnalysis | null>(null);
@@ -304,6 +304,14 @@ export default function Home() {
         return;
       }
       setUploadedFile(file);
+
+      // Create a stable object URL pointing at the user's file for the PDF viewer.
+      // Revoke the previous one first to avoid memory leaks.
+      setUploadedFileUrl(prev => {
+        if (prev) URL.revokeObjectURL(prev);
+        return URL.createObjectURL(file);
+      });
+
       setExtractionResult(null);
       setAiAnalysis(null);
       setShowPDFViewer(false);
@@ -343,30 +351,47 @@ export default function Home() {
   const isAnalyzing = analyzeMutation.isPending;
 
   // ── Get pairs for WebViewer ────────────────────────────────────────────────
-  // Map the real Apryse JSON structure (keyValueElements with key_text/value_text/key_rect/value_rect)
+  // Support TWO schemas coming from the server:
+  //
+  //  A) Normalized flat schema (mock data + normalized real output):
+  //     el.key_text, el.value_text, el.key_rect, el.value_rect
+  //
+  //  B) Raw Apryse SDK schema (in case real data arrives un-normalized):
+  //     el.key.words[].content → key text,  el.key.rect → key bbox
+  //     el.words[].content     → value text, el.rect     → value bbox
   const extractedPairs: KeyValuePair[] = extractionResult
     ? (
         (extractionResult.data.pages as Array<{
           properties: { pageNumber: number };
-          keyValueElements: Array<{
-            confidence: number;
-            key_text: string;
-            value_text: string;
-            key_rect: number[];
-            value_rect: number[];
-          }>;
+          keyValueElements: Array<Record<string, unknown>>;
         }>) || []
-      ).flatMap(p =>
-        (p.keyValueElements || []).map(e => ({
-          key: e.key_text,
-          value: e.value_text,
-          confidence: e.confidence,
-          pageNumber: p.properties?.pageNumber ?? 1,
-          key_rect: e.key_rect as [number, number, number, number],
-          value_rect: e.value_rect as [number, number, number, number],
-          key_bbox: e.key_rect as [number, number, number, number],
-          value_bbox: e.value_rect as [number, number, number, number],
-        }))
+      ).flatMap((p) =>
+        (p.keyValueElements || []).map((e) => {
+          // ── Schema A: flat/normalised ──
+          const keyText   = (e.key_text   as string)  ?? "";
+          const valueText = (e.value_text as string)  ?? "";
+          const keyRect   = (e.key_rect   as [number,number,number,number] | null) ?? null;
+          const valueRect = (e.value_rect as [number,number,number,number] | null) ?? null;
+
+          // ── Schema B: raw Apryse SDK ──
+          const rawKey   = e.key   as { rect?: number[]; words?: Array<{ content: string }> } | undefined;
+          const rawWords = e.words as Array<{ content: string }> | undefined;
+          const rawRect  = e.rect  as number[] | undefined;
+
+          const resolvedKeyText   = keyText   || (rawKey?.words  || []).map((w) => w.content).join(" ");
+          const resolvedValueText = valueText || (rawWords        || []).map((w) => w.content).join(" ");
+          const resolvedKeyRect   = (keyRect  ?? (rawKey?.rect   ? rawKey.rect   as [number,number,number,number] : null));
+          const resolvedValueRect = (valueRect ?? (rawRect        ? rawRect       as [number,number,number,number] : null));
+
+          return {
+            key:        resolvedKeyText,
+            value:      resolvedValueText,
+            confidence: (e.confidence as number) ?? 0.999,
+            pageNumber: p.properties?.pageNumber ?? 1,
+            key_rect:   resolvedKeyRect ?? undefined,
+            value_rect: resolvedValueRect ?? undefined,
+          };
+        })
       )
     : [];
 
@@ -575,7 +600,7 @@ export default function Home() {
                         View Extraction Highlights on PDF
                       </p>
                       <p className="text-xs text-muted-foreground mt-0.5">
-                        Hover any annotation to see the extracted key or value — red = keys, blue = values
+                        Hover any annotation to see the extracted key or value — blue = keys, red = values
                       </p>
                     </div>
                     <Button
@@ -593,11 +618,11 @@ export default function Home() {
                   {showPDFViewer && (
                     <div className="mb-3 flex flex-wrap gap-3">
                       <span className="flex items-center gap-1.5 text-xs font-medium text-foreground">
-                        <span className="w-3 h-3 rounded-sm bg-red-500 opacity-80" />
+                        <span className="w-3 h-3 rounded-sm bg-blue-500 opacity-80" />
                         Keys (extracted field names)
                       </span>
                       <span className="flex items-center gap-1.5 text-xs font-medium text-foreground">
-                        <span className="w-3 h-3 rounded-sm bg-blue-500 opacity-80" />
+                        <span className="w-3 h-3 rounded-sm bg-red-500 opacity-80" />
                         Values (extracted data)
                       </span>
                     </div>
@@ -605,7 +630,10 @@ export default function Home() {
 
                   {showPDFViewer && (
                     <div className="animate-fade-in-up">
-                      <ExtractionWebViewer pairs={extractedPairs} />
+                      <ExtractionWebViewer
+                        pairs={extractedPairs}
+                        pdfUrl={uploadedFileUrl ?? undefined}
+                      />
                     </div>
                   )}
                 </div>
@@ -837,6 +865,7 @@ export default function Home() {
                     size="sm"
                     onClick={() => {
                       setUploadedFile(null);
+                      setUploadedFileUrl(prev => { if (prev) URL.revokeObjectURL(prev); return null; });
                       setExtractionResult(null);
                       setAiAnalysis(null);
                       setShowPDFViewer(false);

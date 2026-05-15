@@ -63,6 +63,52 @@ export interface ExtractionResult {
   errorMessage?: string;
 }
 
+// ─── Schema normalizer ────────────────────────────────────────────────────────
+// Real Apryse SDK output schema per element:
+//   el.rect          → VALUE bounding box  [x1, y1, x2, y2]
+//   el.words         → VALUE word objects  [{ content, rect }]
+//   el.key.rect      → KEY bounding box    [x1, y1, x2, y2]
+//   el.key.words     → KEY word objects    [{ content, rect }]
+//
+// We normalise this to the flat schema used everywhere in the app:
+//   key_text, value_text, key_rect, value_rect, confidence
+//
+// The mock data in mockExtractedData.ts already uses this flat schema, so it
+// does NOT need to be normalised again.
+function normalizeRawExtractionData(
+  rawData: Record<string, unknown>
+): Record<string, unknown> {
+  interface RawWord { content: string; rect: number[] }
+  interface RawKeyEl {
+    confidence: number;
+    rect: number[];           // value bbox
+    words: RawWord[];         // value words
+    key: {
+      rect: number[];         // key bbox
+      words: RawWord[];       // key words
+    };
+  }
+  interface RawPage {
+    properties: { pageNumber: number };
+    keyValueElements: RawKeyEl[];
+  }
+
+  const pages = (rawData.pages as RawPage[]) || [];
+
+  const normalizedPages = pages.map((page) => ({
+    ...page,
+    keyValueElements: (page.keyValueElements || []).map((el) => ({
+      key_text: (el.key?.words || []).map((w) => w.content).join(" "),
+      value_text: (el.words || []).map((w) => w.content).join(" "),
+      key_rect: el.key?.rect ?? null,
+      value_rect: el.rect ?? null,
+      confidence: el.confidence ?? 0.999,
+    })),
+  }));
+
+  return { ...rawData, pages: normalizedPages };
+}
+
 /**
  * Extracts key-value pairs from a PDF using the Apryse DataExtractionModule.
  *
@@ -172,8 +218,11 @@ export async function extractPDFData(
 
         if (fs.existsSync(outputPath)) {
           const raw = fs.readFileSync(outputPath, "utf-8");
-          extractedData = JSON.parse(raw) as Record<string, unknown>;
-          console.log("[apryseExtraction] Live extraction succeeded");
+          const rawParsed = JSON.parse(raw) as Record<string, unknown>;
+          // Normalize from the real Apryse schema (el.rect = value, el.key.rect = key)
+          // into the flat key_text/value_text/key_rect/value_rect format.
+          extractedData = normalizeRawExtractionData(rawParsed);
+          console.log("[apryseExtraction] Live extraction succeeded (normalized)");
         } else {
           sdkError =
             "SDK completed without error but produced no output file. " +

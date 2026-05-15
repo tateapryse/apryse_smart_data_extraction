@@ -60,9 +60,12 @@ interface StickyAnnot {
 // Read license key from env var — set VITE_APRYSE_LICENSE_KEY in your .env file
 const ENV_LICENSE_KEY = import.meta.env.VITE_APRYSE_LICENSE_KEY as string | undefined;
 
+const DEMO_PDF_URL = "https://d2xsxph8kpxj0f.cloudfront.net/310519663271420096/4Vny8aZvPW3bDSPWHgiJMF/OUTPUT-8ed22c_d467d567.pdf";
+
 async function loadWebViewer(
   container: HTMLDivElement,
-  licenseKey?: string
+  licenseKey?: string,
+  initialDoc?: string
 ): Promise<WVInstance> {
   const mod = await import("@pdftron/webviewer");
   const WebViewer = mod.default;
@@ -70,7 +73,7 @@ async function loadWebViewer(
     {
       path: "/lib/webviewer",
       licenseKey: licenseKey || ENV_LICENSE_KEY || undefined,
-      initialDoc: "https://d2xsxph8kpxj0f.cloudfront.net/310519663271420096/4Vny8aZvPW3bDSPWHgiJMF/OUTPUT-8ed22c_d467d567.pdf",
+      initialDoc: initialDoc || DEMO_PDF_URL,
       disabledElements: [
         "toolbarGroup-Annotate",
         "toolbarGroup-Shapes",
@@ -120,83 +123,102 @@ function makeRect(
 }
 
 // ─── Extraction Highlight Viewer ──────────────────────────────────────────────
-// Keys → tight RED borders (#EF1815 = RGB 239,24,21)
-// Values → tight BLUE borders (RGB 37,99,235)
+// Keys  → tight BLUE borders  (RGB 37,99,235)
+// Values → tight RED borders  (RGB 239,24,21)
 // Each annotation is placed on the correct page using pair.pageNumber
+// Helper to draw annotations onto an already-loaded WebViewer instance
+function drawExtractionAnnotations(
+  instance: WVInstance,
+  pairs: KeyValuePair[]
+) {
+  const { annotationManager, Annotations } = instance.Core;
+
+  // Blue for KEYS
+  const KEY_FILL:   [number,number,number] = [37,  99, 235];
+  const KEY_STROKE: [number,number,number] = [37,  99, 235];
+
+  // Red for VALUES
+  const VAL_FILL:   [number,number,number] = [239, 24,  21];
+  const VAL_STROKE: [number,number,number] = [239, 24,  21];
+
+  const annotations: unknown[] = [];
+
+  const withKeyRect   = pairs.filter((p) => p.key_rect   ?? p.key_bbox);
+  const withValueRect = pairs.filter((p) => p.value_rect ?? p.value_bbox);
+  console.log(
+    `[ExtractionAnnotations] total pairs=${pairs.length} ` +
+    `keyRects=${withKeyRect.length} valueRects=${withValueRect.length}`
+  );
+
+
+  pairs.forEach((pair) => {
+    const page = pair.pageNumber || 1;
+    const conf = Math.round((pair.confidence || 0.999) * 100);
+
+    const kRect = (pair.key_rect ?? pair.key_bbox) as [number,number,number,number] | null | undefined;
+    const vRect = (pair.value_rect ?? pair.value_bbox) as [number,number,number,number] | null | undefined;
+
+    if (kRect && kRect[2] > kRect[0] && kRect[3] > kRect[1]) {
+      annotations.push(
+        makeRect(
+          Annotations, page, kRect,
+          KEY_FILL, KEY_STROKE,
+          "Apryse SDK — Key",
+          `KEY: ${pair.key}\nConfidence: ${conf}%`,
+          1.5
+        )
+      );
+    }
+
+    if (vRect && vRect[2] > vRect[0] && vRect[3] > vRect[1]) {
+      annotations.push(
+        makeRect(
+          Annotations, page, vRect,
+          VAL_FILL, VAL_STROKE,
+          "Apryse SDK — Value",
+          `VALUE: ${pair.value}\nKey: ${pair.key}`,
+          1.5
+        )
+      );
+    }
+  });
+
+  if (annotations.length > 0) {
+    annotationManager.addAnnotations(annotations);
+    annotationManager.drawAnnotationsFromList(annotations);
+  }
+}
+
 export function ExtractionWebViewer({
   pairs,
+  pdfUrl,
   licenseKey = "",
 }: {
   pairs: KeyValuePair[];
+  /** Object URL (or any URL) for the PDF to display. Falls back to the demo PDF. */
+  pdfUrl?: string;
   licenseKey?: string;
 }) {
   const viewerRef = useRef<HTMLDivElement>(null);
-  const instanceRef = useRef<unknown>(null);
+  const instanceRef = useRef<WVInstance | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
+  // Initial load — create WebViewer once
   useEffect(() => {
     if (!viewerRef.current || instanceRef.current) return;
     let cancelled = false;
 
-    loadWebViewer(viewerRef.current, licenseKey || ENV_LICENSE_KEY)
+    loadWebViewer(viewerRef.current, licenseKey || ENV_LICENSE_KEY, pdfUrl)
       .then((instance) => {
         if (cancelled) return;
         instanceRef.current = instance;
-        const { documentViewer, annotationManager, Annotations } = instance.Core;
+        const { documentViewer } = instance.Core;
 
         documentViewer.addEventListener("documentLoaded", () => {
           if (cancelled) return;
           setLoading(false);
-
-          // Crimson #EF1815 for KEYS
-          const KEY_FILL:   [number,number,number] = [239, 24,  21];
-          const KEY_STROKE: [number,number,number] = [239, 24,  21];
-
-          // Blue for VALUES
-          const VAL_FILL:   [number,number,number] = [37,  99, 235];
-          const VAL_STROKE: [number,number,number] = [37,  99, 235];
-
-          const annotations: unknown[] = [];
-
-          pairs.forEach((pair) => {
-            const page = pair.pageNumber || 1;
-            const conf = Math.round((pair.confidence || 0.999) * 100);
-
-            // Resolve key rect (prefer key_rect, fall back to key_bbox)
-            const kRect = (pair.key_rect ?? pair.key_bbox) as [number,number,number,number] | null | undefined;
-            // Resolve value rect (prefer value_rect, fall back to value_bbox)
-            const vRect = (pair.value_rect ?? pair.value_bbox) as [number,number,number,number] | null | undefined;
-
-            if (kRect && kRect[2] > kRect[0] && kRect[3] > kRect[1]) {
-              annotations.push(
-                makeRect(
-                  Annotations, page, kRect,
-                  KEY_FILL, KEY_STROKE,
-                  "Apryse SDK — Key",
-                  `KEY: ${pair.key}\nConfidence: ${conf}%`,
-                  1.5
-                )
-              );
-            }
-
-            if (vRect && vRect[2] > vRect[0] && vRect[3] > vRect[1]) {
-              annotations.push(
-                makeRect(
-                  Annotations, page, vRect,
-                  VAL_FILL, VAL_STROKE,
-                  "Apryse SDK — Value",
-                  `VALUE: ${pair.value}\nKey: ${pair.key}`,
-                  1.5
-                )
-              );
-            }
-          });
-
-          if (annotations.length > 0) {
-            annotationManager.addAnnotations(annotations);
-            annotationManager.drawAnnotationsFromList(annotations);
-          }
+          drawExtractionAnnotations(instance, pairs);
         });
       })
       .catch((err: unknown) => {
@@ -208,6 +230,29 @@ export function ExtractionWebViewer({
 
     return () => { cancelled = true; };
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // When pdfUrl changes (new file uploaded), load the new document and redraw annotations
+  useEffect(() => {
+    const instance = instanceRef.current;
+    if (!instance || !pdfUrl) return;
+
+    setLoading(true);
+    const { documentViewer } = instance.Core;
+
+    // loadDocument is available on the documentViewer in WebViewer v8+
+    const dv = documentViewer as unknown as {
+      loadDocument: (url: string) => void;
+      addEventListener: (event: string, cb: () => void) => void;
+    };
+    dv.loadDocument(pdfUrl);
+
+    const handler = () => {
+      setLoading(false);
+      drawExtractionAnnotations(instance, pairs);
+    };
+    dv.addEventListener("documentLoaded", handler);
+    // Note: WebViewer's addEventListener is additive; old listeners stay but are idempotent for this use-case
+  }, [pdfUrl]); // eslint-disable-line react-hooks/exhaustive-deps
 
   if (error) {
     return (
