@@ -1,6 +1,7 @@
 import * as fs from "fs";
 import * as path from "path";
 import * as os from "os";
+import * as crypto from "crypto";
 import { createRequire } from "module";
 
 const require = createRequire(import.meta.url);
@@ -55,12 +56,46 @@ function getDataExtractionResourcePath(): string {
   return baseLib;
 }
 
+// Path to the staged Apryse OCR module (v12 deep-learning engine).
+// Registered via addResourceSearchPath so OCRModule.isModuleAvailable() is true.
+const OCR_MODULE_PATH = path.resolve(process.cwd(), "apryse-ocr-module", "Lib");
+
+// Per-upload OCR measurement surfaced to the demo UI.
+export interface OcrInfo {
+  applied: boolean;      // whether processPDF was actually run on this file
+  available: boolean;    // whether the OCR module loaded
+  charsBefore: number;   // text-layer chars before OCR (the no-OCR floor)
+  charsAfter: number;    // text-layer chars after OCR (or same if skipped)
+  pageCount: number;
+  timeMs: number;        // OCR processing time
+}
+
 export interface ExtractionResult {
   success: boolean;
   data: Record<string, unknown>;
   usedMock: boolean;
   extractionTime: number;
   errorMessage?: string;
+  ocr?: OcrInfo;
+  fromCache?: boolean;
+  ocrPdfBase64?: string; // only present when OCR was applied
+}
+
+// Sum trimmed text-layer characters across every page of an open PDFDoc.
+async function measureDocText(
+  PDFNet: any,
+  doc: any
+): Promise<{ chars: number; pageCount: number }> {
+  await doc.initSecurityHandler();
+  const pageCount: number = await doc.getPageCount();
+  const txt = await PDFNet.TextExtractor.create();
+  let chars = 0;
+  for (let i = 1; i <= pageCount; i++) {
+    const page = await doc.getPage(i);
+    txt.begin(page);
+    chars += (await txt.getAsText()).trim().length;
+  }
+  return { chars, pageCount };
 }
 
 // ─── Schema normalizer ────────────────────────────────────────────────────────
@@ -169,6 +204,7 @@ export async function extractPDFData(
 
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "apryse-"));
   const inputPath = path.join(tmpDir, originalFileName || "input.pdf");
+  const ocrInputPath = path.join(tmpDir, "ocr-input.pdf");
   const outputPath = path.join(tmpDir, "output.json");
 
   try {
@@ -179,6 +215,7 @@ export async function extractPDFData(
 
     let extractedData: Record<string, unknown> | null = null;
     let sdkError: string | undefined;
+    let ocrInfo: OcrInfo | undefined;
 
     await PDFNet.runWithCleanup(async () => {
       try {
@@ -187,6 +224,7 @@ export async function extractPDFData(
         const resourcePath = getDataExtractionResourcePath();
         console.log(`[apryseExtraction] Resource path: ${resourcePath}`);
         await PDFNet.addResourceSearchPath(resourcePath);
+        await PDFNet.addResourceSearchPath(OCR_MODULE_PATH);
 
         const isAvailable = await PDFNet.DataExtractionModule.isModuleAvailable(
           PDFNet.DataExtractionModule.DataExtractionEngine.e_GenericKeyValue
@@ -201,6 +239,65 @@ export async function extractPDFData(
           return;
         }
 
+        // ── OCR pre-pass ──────────────────────────────────────────────────────
+        // Measure the existing text layer. If the document is a scan (little to
+        // no extractable text) and the OCR module is available, burn a searchable
+        // text layer in with OCRModule.processPDF, then extract from that copy.
+        // Report the real before/after character counts for THIS file.
+        let extractionInputPath = inputPath;
+        try {
+          const ocrAvailable = await PDFNet.OCRModule.isModuleAvailable();
+          const doc = await PDFNet.PDFDoc.createFromFilePath(inputPath);
+          const before = await measureDocText(PDFNet, doc);
+          // Heuristic: fewer than ~20 chars/page means effectively no text layer.
+          const needsOcr = before.chars < before.pageCount * 20;
+
+          let charsAfter = before.chars;
+          let applied = false;
+          let timeMs = 0;
+
+          if (ocrAvailable && needsOcr) {
+            console.log(
+              `[apryseExtraction] Sparse text layer (${before.chars} chars / ${before.pageCount} pages) — running OCR`
+            );
+            const t0 = Date.now();
+            const opts = await PDFNet.OCRModule.createOCROptions();
+            opts.addLang("eng");
+            await PDFNet.OCRModule.processPDF(doc, opts);
+            await doc.save(
+              ocrInputPath,
+              PDFNet.SDFDoc.SaveOptions.e_linearized
+            );
+            timeMs = Date.now() - t0;
+            const after = await measureDocText(PDFNet, doc);
+            charsAfter = after.chars;
+            applied = true;
+            extractionInputPath = ocrInputPath;
+            console.log(
+              `[apryseExtraction] OCR recovered ${charsAfter} chars in ${timeMs}ms`
+            );
+          } else {
+            console.log(
+              `[apryseExtraction] Text layer present (${before.chars} chars) — OCR not needed`
+            );
+          }
+
+          ocrInfo = {
+            applied,
+            available: ocrAvailable,
+            charsBefore: before.chars,
+            charsAfter,
+            pageCount: before.pageCount,
+            timeMs,
+          };
+        } catch (ocrErr: unknown) {
+          // OCR is best-effort — never fail extraction because of it.
+          console.warn(
+            "[apryseExtraction] OCR pre-pass skipped:",
+            ocrErr instanceof Error ? ocrErr.message : String(ocrErr)
+          );
+        }
+
         console.log(`[apryseExtraction] Running live extraction on: ${originalFileName}`);
 
         // ── Core extraction call ──────────────────────────────────────────────
@@ -211,7 +308,7 @@ export async function extractPDFData(
         //     DataExtractionModule.DataExtractionEngine.e_generic_key_value
         //   )
         await PDFNet.DataExtractionModule.extractData(
-          inputPath,
+          extractionInputPath,
           outputPath,
           PDFNet.DataExtractionModule.DataExtractionEngine.e_GenericKeyValue
         );
@@ -241,6 +338,7 @@ export async function extractPDFData(
         data: extractedData,
         usedMock: false,
         extractionTime: Date.now() - startTime,
+        ocr: ocrInfo,
       };
     }
 
@@ -251,6 +349,7 @@ export async function extractPDFData(
       usedMock: false,
       extractionTime: Date.now() - startTime,
       errorMessage: sdkError ?? "SDK extraction failed with no error message.",
+      ocr: ocrInfo,
     };
   } catch (err: unknown) {
     const errorMessage =
@@ -266,6 +365,7 @@ export async function extractPDFData(
   } finally {
     try {
       if (fs.existsSync(inputPath)) fs.unlinkSync(inputPath);
+      if (fs.existsSync(ocrInputPath)) fs.unlinkSync(ocrInputPath);
       if (fs.existsSync(outputPath)) fs.unlinkSync(outputPath);
       fs.rmdirSync(tmpDir);
     } catch {
@@ -273,3 +373,384 @@ export async function extractPDFData(
     }
   }
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// TWO-PHASE FLOW (so the UI can show OCR vs Extraction separately)
+//
+// Phase 1: detectAndOcr()  — read the text layer, decide scan vs digital, and
+//          run OCR if needed. Returns a token pointing at a server-side temp
+//          copy of the (possibly OCR'd) PDF, plus the per-file OCR numbers.
+// Phase 2: extractFromToken() — run DataExtractionModule.extractData on that
+//          temp copy, then delete it.
+//
+// The client drives both calls, so it always knows which phase is running.
+// ─────────────────────────────────────────────────────────────────────────────
+
+interface OcrJob {
+  dir: string;
+  pdfPath: string; // the (possibly OCR'd) PDF to extract from
+  originalName: string;
+  ocr: OcrInfo;
+  timer: NodeJS.Timeout;
+  cacheKey?: string; // set when we want to write to extraction cache on phase-2 success
+}
+
+// Short-lived server-side store bridging the two calls. Entries self-expire.
+const ocrJobs = new Map<string, OcrJob>();
+const OCR_JOB_TTL_MS = 10 * 60 * 1000;
+
+// ── Extraction cache keyed by pdf content hash ────────────────────────────
+const PIPELINE_VERSION = "1";
+interface CachedExtraction {
+  ocr: OcrInfo;
+  data: Record<string, unknown>;
+  ocrPdfBase64?: string;
+}
+const extractionCache = new Map<string, CachedExtraction>();
+const CACHE_MAX_ENTRIES = 50;
+const CACHE_FILE = path.join(process.cwd(), "files", ".extraction-cache.json");
+
+function loadCacheFromDisk(): void {
+  try {
+    const raw = fs.readFileSync(CACHE_FILE, "utf8");
+    const entries: [string, CachedExtraction][] = JSON.parse(raw);
+    for (const [k, v] of entries) {
+      extractionCache.set(k, v);
+    }
+  } catch {
+    // no cache file yet — that's fine
+  }
+}
+
+function saveCacheToDisk(): void {
+  try {
+    fs.mkdirSync(path.dirname(CACHE_FILE), { recursive: true });
+    fs.writeFileSync(CACHE_FILE, JSON.stringify([...extractionCache.entries()]), "utf8");
+  } catch {
+    // non-fatal: next write will retry
+  }
+}
+
+loadCacheFromDisk();
+
+function computePdfHash(buf: Buffer): string {
+  return crypto.createHash("sha256").update(buf).digest("hex");
+}
+
+function buildCacheKey(hash: string): string {
+  return `${hash}:e_generic_key_value:v${PIPELINE_VERSION}`;
+}
+
+function pruneCache(): void {
+  if (extractionCache.size < CACHE_MAX_ENTRIES) return;
+  // evict the first (insertion-order oldest) entry
+  const firstKey = extractionCache.keys().next().value;
+  if (firstKey) extractionCache.delete(firstKey);
+}
+
+function cleanupJob(token: string): void {
+  const job = ocrJobs.get(token);
+  if (!job) return;
+  clearTimeout(job.timer);
+  ocrJobs.delete(token);
+  try {
+    fs.rmSync(job.dir, { recursive: true, force: true });
+  } catch {
+    // Ignore cleanup errors
+  }
+}
+
+export interface DetectAndOcrResult {
+  success: boolean;
+  token?: string;
+  ocr?: OcrInfo;
+  usedMock?: boolean;
+  errorMessage?: string;
+  fromCache?: boolean;
+}
+
+/**
+ * Phase 1 — detect scanned pages and OCR only if needed.
+ * Keeps the resulting PDF in a temp dir and returns a token for phase 2.
+ */
+export async function detectAndOcr(
+  pdfBuffer: Buffer,
+  originalFileName: string
+): Promise<DetectAndOcrResult> {
+  if (USE_MOCK_DATA) {
+    await new Promise((resolve) => setTimeout(resolve, 800));
+    return {
+      success: true,
+      token: "mock",
+      usedMock: true,
+      ocr: {
+        applied: false,
+        available: false,
+        charsBefore: 0,
+        charsAfter: 0,
+        pageCount: 0,
+        timeMs: 0,
+      },
+    };
+  }
+
+  const licenseKey = process.env.APRYSE_LICENSE_KEY;
+  if (!licenseKey) {
+    return {
+      success: false,
+      errorMessage:
+        "APRYSE_LICENSE_KEY is not set. Add it to your .env file. " +
+        "If you want to run without a license key, set USE_MOCK_DATA=true in server/apryseExtraction.ts.",
+    };
+  }
+
+  // Cache fast path — if we've already processed this exact document, skip OCR + extraction
+  const pdfHash = computePdfHash(pdfBuffer);
+  const key = buildCacheKey(pdfHash);
+  const cached = extractionCache.get(key);
+  if (cached) {
+    console.log(`[detectAndOcr] Cache hit ${key.slice(0, 16)}… — skipping OCR + extraction`);
+    return { success: true, token: `cache:${key}`, ocr: cached.ocr, usedMock: false, fromCache: true };
+  }
+
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "apryse-ocr-"));
+  const inputPath = path.join(dir, originalFileName || "input.pdf");
+  const ocrPath = path.join(dir, "ocr-output.pdf");
+
+  try {
+    fs.writeFileSync(inputPath, pdfBuffer);
+
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const { PDFNet } = require("@pdftron/pdfnet-node");
+
+    let ocrInfo: OcrInfo | undefined;
+    let processedPath = inputPath;
+    let phaseError: string | undefined;
+
+    await PDFNet.runWithCleanup(async () => {
+      await PDFNet.addResourceSearchPath(OCR_MODULE_PATH);
+
+      const ocrAvailable = await PDFNet.OCRModule.isModuleAvailable();
+      const doc = await PDFNet.PDFDoc.createFromFilePath(inputPath);
+      const before = await measureDocText(PDFNet, doc);
+      // Heuristic: fewer than ~20 chars/page means effectively no text layer.
+      const needsOcr = before.chars < before.pageCount * 20;
+
+      let charsAfter = before.chars;
+      let applied = false;
+      let timeMs = 0;
+
+      if (ocrAvailable && needsOcr) {
+        console.log(
+          `[detectAndOcr] Scanned doc (${before.chars} chars / ${before.pageCount} pages) — running OCR`
+        );
+        const t0 = Date.now();
+        const opts = await PDFNet.OCRModule.createOCROptions();
+        opts.addLang("eng");
+        await PDFNet.OCRModule.processPDF(doc, opts);
+        await doc.save(ocrPath, PDFNet.SDFDoc.SaveOptions.e_linearized);
+        timeMs = Date.now() - t0;
+        const after = await measureDocText(PDFNet, doc);
+        charsAfter = after.chars;
+        applied = true;
+        processedPath = ocrPath;
+        console.log(`[detectAndOcr] OCR recovered ${charsAfter} chars in ${timeMs}ms`);
+      } else {
+        console.log(
+          `[detectAndOcr] Digital PDF (${before.chars} chars) — OCR not needed`
+        );
+      }
+
+      ocrInfo = {
+        applied,
+        available: ocrAvailable,
+        charsBefore: before.chars,
+        charsAfter,
+        pageCount: before.pageCount,
+        timeMs,
+      };
+    }, licenseKey);
+
+    if (phaseError || !ocrInfo) {
+      fs.rmSync(dir, { recursive: true, force: true });
+      return { success: false, errorMessage: phaseError ?? "OCR phase failed." };
+    }
+
+    const token = crypto.randomUUID();
+    const timer = setTimeout(() => cleanupJob(token), OCR_JOB_TTL_MS);
+    ocrJobs.set(token, {
+      dir,
+      pdfPath: processedPath,
+      originalName: originalFileName,
+      ocr: ocrInfo,
+      timer,
+      cacheKey: key,
+    });
+
+    return { success: true, token, ocr: ocrInfo, usedMock: false, fromCache: false };
+  } catch (err: unknown) {
+    const errorMessage = err instanceof Error ? err.message : String(err);
+    console.error("[detectAndOcr] Error:", errorMessage);
+    try {
+      fs.rmSync(dir, { recursive: true, force: true });
+    } catch {
+      // Ignore cleanup errors
+    }
+    return { success: false, errorMessage };
+  }
+}
+
+/**
+ * Phase 2 — extract key-value data from the PDF prepared in phase 1.
+ * Consumes the token, runs extractData, then removes the temp copy.
+ */
+export async function extractFromToken(token: string): Promise<ExtractionResult> {
+  const startTime = Date.now();
+
+  if (USE_MOCK_DATA || token === "mock") {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const { mockExtractionResult } = require("./mockExtractedData");
+    await new Promise((resolve) => setTimeout(resolve, 900));
+    return {
+      success: true,
+      data: mockExtractionResult as Record<string, unknown>,
+      usedMock: true,
+      extractionTime: Date.now() - startTime,
+    };
+  }
+
+  // Cache fast path — token issued by detectAndOcr when it found a cache hit
+  if (token.startsWith("cache:")) {
+    const entry = extractionCache.get(token.slice("cache:".length));
+    if (entry) {
+      console.log(`[extractFromToken] Returning cached extraction`);
+      return {
+        success: true,
+        data: entry.data,
+        usedMock: false,
+        extractionTime: 0,
+        ocr: entry.ocr,
+        fromCache: true,
+        ocrPdfBase64: entry.ocrPdfBase64,
+      };
+    }
+    return {
+      success: false,
+      data: {},
+      usedMock: false,
+      extractionTime: 0,
+      errorMessage: "Cache entry expired. Please re-upload the document.",
+    };
+  }
+
+  const licenseKey = process.env.APRYSE_LICENSE_KEY;
+  if (!licenseKey) {
+    return {
+      success: false,
+      data: {},
+      usedMock: false,
+      extractionTime: Date.now() - startTime,
+      errorMessage: "APRYSE_LICENSE_KEY is not set.",
+    };
+  }
+
+  const job = ocrJobs.get(token);
+  if (!job) {
+    return {
+      success: false,
+      data: {},
+      usedMock: false,
+      extractionTime: Date.now() - startTime,
+      errorMessage:
+        "OCR session expired or was not found. Please re-upload the document.",
+    };
+  }
+
+  const outputPath = path.join(job.dir, "output.json");
+
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const { PDFNet } = require("@pdftron/pdfnet-node");
+
+    let extractedData: Record<string, unknown> | null = null;
+    let sdkError: string | undefined;
+
+    await PDFNet.runWithCleanup(async () => {
+      try {
+        const resourcePath = getDataExtractionResourcePath();
+        await PDFNet.addResourceSearchPath(resourcePath);
+
+        const isAvailable = await PDFNet.DataExtractionModule.isModuleAvailable(
+          PDFNet.DataExtractionModule.DataExtractionEngine.e_GenericKeyValue
+        );
+        if (!isAvailable) {
+          sdkError =
+            "DataExtractionModule (e_generic_key_value) is not available.";
+          return;
+        }
+
+        await PDFNet.DataExtractionModule.extractData(
+          job.pdfPath,
+          outputPath,
+          PDFNet.DataExtractionModule.DataExtractionEngine.e_GenericKeyValue
+        );
+
+        if (fs.existsSync(outputPath)) {
+          const raw = fs.readFileSync(outputPath, "utf-8");
+          const rawParsed = JSON.parse(raw) as Record<string, unknown>;
+          extractedData = normalizeRawExtractionData(rawParsed);
+        } else {
+          sdkError = "SDK completed without error but produced no output file.";
+        }
+      } catch (innerErr: unknown) {
+        sdkError =
+          innerErr instanceof Error ? innerErr.message : String(innerErr);
+        console.error("[extractFromToken] SDK inner error:", sdkError);
+      }
+    }, licenseKey);
+
+    if (extractedData) {
+      const ocrPdfBase64 = job.ocr.applied
+        ? fs.readFileSync(job.pdfPath).toString("base64")
+        : undefined;
+      if (job.cacheKey) {
+        pruneCache();
+        extractionCache.set(job.cacheKey, { ocr: job.ocr, data: extractedData, ocrPdfBase64 });
+        saveCacheToDisk();
+        console.log(`[extractFromToken] Cached extraction under ${job.cacheKey.slice(0, 16)}…`);
+      }
+      return {
+        success: true,
+        data: extractedData,
+        usedMock: false,
+        extractionTime: Date.now() - startTime,
+        ocr: job.ocr,
+        fromCache: false,
+        ocrPdfBase64,
+      };
+    }
+
+    return {
+      success: false,
+      data: {},
+      usedMock: false,
+      extractionTime: Date.now() - startTime,
+      errorMessage: sdkError ?? "SDK extraction failed with no error message.",
+      ocr: job.ocr,
+    };
+  } catch (err: unknown) {
+    const errorMessage = err instanceof Error ? err.message : String(err);
+    console.error("[extractFromToken] Error:", errorMessage);
+    return {
+      success: false,
+      data: {},
+      usedMock: false,
+      extractionTime: Date.now() - startTime,
+      errorMessage,
+      ocr: job.ocr,
+    };
+  } finally {
+    cleanupJob(token);
+  }
+}
+

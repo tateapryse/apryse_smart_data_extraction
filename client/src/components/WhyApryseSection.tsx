@@ -19,14 +19,14 @@ import { Badge } from "@/components/ui/badge";
 import { Slider } from "@/components/ui/slider";
 
 // ─── Token Cost Calculator ────────────────────────────────────────────────────
-// Source: Gemini 2.5 Pro pricing — $1.25/1M input tokens (≤200K), $2.50/1M (>200K)
-//         Output: $10.00/1M tokens
+// Source: Gemini 2.5 Flash pricing (the model this demo runs) —
+//         $0.30/1M input tokens (text), $2.50/1M output tokens.
 function CostCalculator() {
   const [docCount, setDocCount] = useState(5000);
   const [tokensPerDoc, setTokensPerDoc] = useState(10000);
   const [reductionPct, setReductionPct] = useState(30);
 
-  const INPUT_RATE = 1.25; // $ per 1M tokens (Gemini 2.5 Pro, ≤200K context)
+  const INPUT_RATE = 0.3; // $ per 1M input tokens (Gemini 2.5 Flash, text)
 
   const rawCost = useMemo(
     () => (docCount * tokensPerDoc * INPUT_RATE) / 1_000_000,
@@ -57,7 +57,7 @@ function CostCalculator() {
           <div className="w-7 h-7 rounded-lg bg-primary/15 flex items-center justify-center">
             <DollarSign className="w-3.5 h-3.5 text-primary" />
           </div>
-          <h3 className="text-base font-semibold text-foreground">Live Token Cost Calculator</h3>
+          <h3 className="text-base font-medium text-foreground">Live Token Cost Calculator</h3>
         </div>
         <p className="text-sm text-muted-foreground">
           Adjust your pipeline parameters to see the real cost impact of structured extraction.
@@ -71,7 +71,7 @@ function CostCalculator() {
           <div className="space-y-3">
             <div className="flex items-center justify-between">
               <label className="text-sm font-medium text-foreground">Documents per run</label>
-              <span className="text-sm font-bold text-primary tabular-nums">
+              <span className="text-sm font-medium text-primary tabular-nums">
                 {docCount.toLocaleString()}
               </span>
             </div>
@@ -86,7 +86,7 @@ function CostCalculator() {
           <div className="space-y-3">
             <div className="flex items-center justify-between">
               <label className="text-sm font-medium text-foreground">Avg tokens / doc</label>
-              <span className="text-sm font-bold text-primary tabular-nums">
+              <span className="text-sm font-medium text-primary tabular-nums">
                 {tokensPerDoc.toLocaleString()}
               </span>
             </div>
@@ -101,7 +101,7 @@ function CostCalculator() {
           <div className="space-y-3">
             <div className="flex items-center justify-between">
               <label className="text-sm font-medium text-foreground">Token reduction</label>
-              <span className="text-sm font-bold text-green-600 tabular-nums">{reductionPct}%</span>
+              <span className="text-sm font-medium text-green-600 tabular-nums">{reductionPct}%</span>
             </div>
             <Slider min={10} max={80} step={5} value={[reductionPct]}
               onValueChange={([v]) => setReductionPct(v)} className="w-full" />
@@ -115,26 +115,25 @@ function CostCalculator() {
         <div className="grid grid-cols-3 gap-3">
           <div className="rounded-xl bg-muted/50 border border-border p-4 text-center">
             <p className="text-xs text-muted-foreground mb-1">Raw PDF cost</p>
-            <p className="text-2xl font-bold text-foreground tabular-nums">{fmt(rawCost)}</p>
+            <p className="text-2xl font-medium text-foreground tabular-nums">{fmt(rawCost)}</p>
             <p className="text-xs text-muted-foreground mt-1">per run</p>
           </div>
           <div className="rounded-xl border border-primary/30 bg-primary/5 p-4 text-center">
             <p className="text-xs text-primary mb-1">Apryse-optimised</p>
-            <p className="text-2xl font-bold text-primary tabular-nums">{fmt(optimisedCost)}</p>
+            <p className="text-2xl font-medium text-primary tabular-nums">{fmt(optimisedCost)}</p>
             <p className="text-xs text-muted-foreground mt-1">per run</p>
           </div>
           <div className="rounded-xl bg-green-50 border border-green-300/60 p-4 text-center">
             <p className="text-xs text-green-700 mb-1">You save</p>
-            <p className="text-2xl font-bold text-green-700 tabular-nums">{fmt(savings)}</p>
+            <p className="text-2xl font-medium text-green-700 tabular-nums">{fmt(savings)}</p>
             <p className="text-xs text-green-600 mt-1">{savingsPct.toFixed(0)}% per run</p>
           </div>
         </div>
 
         {/* Rate footnote */}
         <p className="text-xs text-muted-foreground text-center">
-          Based on Gemini 2.5 Pro input rate: $1.25 / 1M tokens (≤200K tokens per prompt).
-          Rate doubles to $2.50 / 1M for prompts exceeding 200K tokens.
-          Output rate: $10.00 / 1M tokens.
+          Based on Gemini 2.5 Flash input rate: $0.30 / 1M text tokens — the model this demo runs.
+          Output rate: $2.50 / 1M tokens. Structured extraction cuts the input payload the LLM must read.
         </p>
       </div>
     </div>
@@ -188,7 +187,7 @@ function PipelineComparison() {
           <div className="w-7 h-7 rounded-lg bg-primary/15 flex items-center justify-center">
             <BarChart3 className="w-3.5 h-3.5 text-primary" />
           </div>
-          <h3 className="text-base font-semibold text-foreground">
+          <h3 className="text-base font-medium text-foreground">
             Pipeline Comparison: Raw PDF vs Apryse-Structured
           </h3>
         </div>
@@ -197,13 +196,13 @@ function PipelineComparison() {
         <table className="w-full text-sm">
           <thead>
             <tr className="border-b border-border bg-muted/30">
-              <th className="text-left px-6 py-3 text-xs font-semibold text-muted-foreground uppercase tracking-wide w-1/4">
+              <th className="text-left px-6 py-3 text-xs font-medium text-muted-foreground uppercase tracking-wide w-1/4">
                 Dimension
               </th>
-              <th className="text-left px-4 py-3 text-xs font-semibold text-primary uppercase tracking-wide w-3/8">
+              <th className="text-left px-4 py-3 text-xs font-medium text-primary uppercase tracking-wide w-3/8">
                 Raw PDF → LLM
               </th>
-              <th className="text-left px-4 py-3 text-xs font-semibold text-green-700 uppercase tracking-wide w-3/8">
+              <th className="text-left px-4 py-3 text-xs font-medium text-green-700 uppercase tracking-wide w-3/8">
                 Apryse SDK → LLM
               </th>
             </tr>
@@ -256,7 +255,7 @@ function SecurityCard({
         <div className="w-7 h-7 rounded-lg bg-primary/15 flex items-center justify-center">
           <Icon className="w-3.5 h-3.5 text-primary" />
         </div>
-        <h4 className="text-sm font-semibold text-foreground">{title}</h4>
+        <h4 className="text-sm font-medium text-foreground">{title}</h4>
       </div>
       <p className="text-xs text-muted-foreground leading-relaxed">{description}</p>
       <div className="flex flex-wrap gap-1.5">
@@ -297,7 +296,7 @@ function StatCallout({
   };
   return (
     <div className={`text-center p-5 rounded-xl border ${bgMap[color]}`}>
-      <p className={`text-3xl font-bold tabular-nums ${colorMap[color]}`}>{value}</p>
+      <p className={`text-3xl font-medium tabular-nums ${colorMap[color]}`}>{value}</p>
       <p className="text-sm font-medium text-foreground mt-1">{label}</p>
       {sub && <p className="text-xs text-muted-foreground mt-0.5">{sub}</p>}
     </div>
@@ -315,11 +314,11 @@ export function WhyApryseSection() {
         <div>
           <div className="flex items-center gap-2 mb-2">
             <div className="h-px flex-1 max-w-8 bg-primary/40" />
-            <span className="text-xs font-semibold text-primary tracking-widest uppercase">
-              For OCBC Indonesia · Strategic Context
+            <span className="text-xs font-medium text-primary tracking-widest uppercase">
+              For Banking Operations · Strategic Context
             </span>
           </div>
-          <h2 className="text-2xl font-bold text-foreground">
+          <h2 className="text-2xl font-medium text-foreground">
             Why structured extraction is a{" "}
             <span className="text-red-gradient">fiscal necessity</span>
           </h2>
@@ -338,15 +337,15 @@ export function WhyApryseSection() {
       {/* Key stats — Azalea / Crimson palette, no black */}
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
         <StatCallout
-          value="$1.25"
+          value="$0.30"
           label="per 1M input tokens"
-          sub="Gemini 2.5 Pro (≤200K tokens)"
+          sub="Gemini 2.5 Flash (text)"
           color="primary"
         />
         <StatCallout
           value="$2.50"
-          label="per 1M input tokens"
-          sub="Prompts exceeding 200K tokens"
+          label="per 1M output tokens"
+          sub="Gemini 2.5 Flash generation"
           color="red"
         />
         <StatCallout
@@ -367,28 +366,28 @@ export function WhyApryseSection() {
       <div className="rounded-2xl p-6 border border-secondary bg-secondary/30">
         <div className="flex items-center gap-2 mb-4">
           <FileText className="w-4 h-4 text-primary" />
-          <h3 className="text-sm font-semibold text-primary">
+          <h3 className="text-sm font-medium text-primary">
             The Math: 5,000 Documents
           </h3>
           <Badge variant="outline" className="ml-auto text-xs border-primary/30 text-primary">
-            At Gemini 2.5 Pro / GPT-5 rates ($1.25 / 1M input tokens)
+            At Gemini 2.5 Flash rates ($0.30 / 1M input tokens)
           </Badge>
         </div>
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 text-sm">
           <div className="space-y-1.5 rounded-xl bg-white/70 border border-border p-4">
-            <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">
+            <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
               Raw pipeline
             </p>
             <p className="text-foreground text-xs leading-relaxed">
-              5,000 docs × 10,000 tokens × $1.25 / 1M
+              5,000 docs × 10,000 tokens × $0.30 / 1M
             </p>
-            <p className="text-2xl font-bold text-foreground">$62.50</p>
+            <p className="text-2xl font-medium text-foreground">$15.00</p>
             <p className="text-xs text-muted-foreground">per run</p>
           </div>
           <div className="flex items-center justify-center">
             <div className="flex flex-col items-center gap-1.5">
               <ArrowRight className="w-5 h-5 text-primary" />
-              <span className="text-xs text-primary font-semibold text-center">
+              <span className="text-xs text-primary font-medium text-center">
                 Apryse strips ~30%
               </span>
               <span className="text-xs text-muted-foreground text-center">
@@ -398,24 +397,25 @@ export function WhyApryseSection() {
             </div>
           </div>
           <div className="space-y-1.5 rounded-xl bg-white/70 border border-primary/25 p-4">
-            <p className="text-xs font-semibold text-primary uppercase tracking-wide">
+            <p className="text-xs font-medium text-primary uppercase tracking-wide">
               Apryse-optimised
             </p>
             <p className="text-foreground text-xs leading-relaxed">
-              5,000 docs × 7,000 tokens × $1.25 / 1M
+              5,000 docs × 7,000 tokens × $0.30 / 1M
             </p>
-            <p className="text-2xl font-bold text-primary">$43.75</p>
+            <p className="text-2xl font-medium text-primary">$10.50</p>
             <p className="text-xs text-green-700 font-medium">
-              Save $18.75 per run · ~30% reduction
+              Save $4.50 per run · ~30% reduction
             </p>
           </div>
         </div>
         <div className="mt-4 pt-4 border-t border-border/50">
           <p className="text-xs text-muted-foreground leading-relaxed">
             <span className="text-foreground font-medium">At scale, two more savings kick in:</span>{" "}
-            First, up to 80% token payload reduction on well-structured documents (10,000 tokens → ~2,000 tokens per doc).
-            Second, no per-page cloud fees — Apryse SDK runs on-premise with fixed licensing.
-            That's nearly 20% savings on input costs alone, before factoring in reduced re-queries from cleaner formatting.
+            First, up to 80% token payload reduction on well-structured documents (10,000 tokens → ~2,000 tokens per doc),
+            which cuts the input bill to ~$3.00 per run at the same rate.
+            Second, no per-page cloud fees — Apryse SDK runs on-premise with fixed licensing,
+            before factoring in reduced re-queries from cleaner formatting.
           </p>
         </div>
       </div>
@@ -447,7 +447,7 @@ export function WhyApryseSection() {
           <div>
             <div className="flex items-center gap-2 mb-4">
               <Lock className="w-4 h-4 text-primary" />
-              <h3 className="text-base font-semibold text-foreground">
+              <h3 className="text-base font-medium text-foreground">
                 Security &amp; Compliance Case
               </h3>
               <Badge variant="outline" className="text-xs border-primary/30 text-primary">
@@ -461,7 +461,7 @@ export function WhyApryseSection() {
                 A cloud-based extraction service processes 5,000 documents through{" "}
                 <span className="text-foreground font-medium">5,000 individual transmissions</span>{" "}
                 over the public internet. An on-premise SDK keeps every file inside your firewall —
-                critical for OCBC Indonesia's regulatory obligations under OJK and Bank Indonesia guidelines.
+                critical for your regulatory obligations and the privacy of customer banking data.
               </p>
             </div>
 
@@ -476,7 +476,7 @@ export function WhyApryseSection() {
                 icon={Server}
                 title="Simplified Audits"
                 description="On-premise processing means simpler GDPR, HIPAA, and SOC 2 audits. Full control over data lineage and access logs."
-                tags={["GDPR", "HIPAA", "SOC 2", "OJK compliant"]}
+                tags={["GDPR", "HIPAA", "SOC 2", "APRA aligned"]}
               />
               <SecurityCard
                 icon={Lock}
@@ -492,7 +492,7 @@ export function WhyApryseSection() {
             <div className="rounded-xl border border-primary/20 bg-primary/5 p-5">
               <div className="flex items-center gap-2 mb-3">
                 <Cloud className="w-4 h-4 text-primary" />
-                <h4 className="text-sm font-semibold text-primary">Cloud extraction service</h4>
+                <h4 className="text-sm font-medium text-primary">Cloud extraction service</h4>
               </div>
               <ul className="space-y-2">
                 {[
@@ -512,7 +512,7 @@ export function WhyApryseSection() {
             <div className="rounded-xl border border-green-300/60 bg-green-50 p-5">
               <div className="flex items-center gap-2 mb-3">
                 <Server className="w-4 h-4 text-green-700" />
-                <h4 className="text-sm font-semibold text-green-700">Apryse on-premise SDK</h4>
+                <h4 className="text-sm font-medium text-green-700">Apryse on-premise SDK</h4>
               </div>
               <ul className="space-y-2">
                 {[
@@ -545,15 +545,15 @@ export function WhyApryseSection() {
             <div className="flex items-start gap-3">
               <Zap className="w-5 h-5 text-secondary shrink-0 mt-0.5" />
               <div>
-                <h4 className="text-sm font-semibold text-white mb-2">
-                  Strategic Recommendation for OCBC Indonesia
+                <h4 className="text-sm font-medium text-white mb-2">
+                  Strategic Recommendation for Banking Document Automation
                 </h4>
                 <p className="text-sm text-white/80 leading-relaxed">
                   For long-term fiscal sustainability and the effective and secure deployment of AI at
                   scale, localised data extraction is a strategic necessity — not an optimisation.
                   Transitioning to a structured pipeline ensures your document assets are not just
                   digitised, but are truly{" "}
-                  <span className="text-secondary font-semibold">AI-ready, secure, and cost-optimised</span>.
+                  <span className="text-secondary font-medium">AI-ready, secure, and cost-optimised</span>.
                   The Apryse Server SDK delivers clean, labeled, context-aware JSON so your RAG
                   pipeline only ingests content that actually matters — eliminating semantic drift
                   from multi-column layouts and hallucinations from split tokens.

@@ -1,8 +1,12 @@
-import { useState, useRef, useCallback } from "react";
+import { useState, useRef, useCallback, useMemo } from "react";
 import { trpc } from "@/lib/trpc";
 import { WhyApryseSection } from "@/components/WhyApryseSection";
+import { DemoContextIntro } from "@/components/DemoContextIntro";
+import { FormRecognitionFlow } from "@/components/FormRecognitionFlow";
 import { ExtractionWebViewer, AIAnnotationWebViewer } from "@/components/PDFWebViewer";
 import { BeforeAfterTokenVisual } from "@/components/BeforeAfterTokenVisual";
+import { MeasuredTokenBenchmark, type LiveTokenData } from "@/components/MeasuredTokenBenchmark";
+import { LocalModelSection } from "@/components/LocalModelSection";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { toast } from "sonner";
@@ -23,6 +27,9 @@ import {
   Shield,
   BarChart3,
   Eye,
+  ScanText,
+  ArrowRight,
+  Download,
 } from "lucide-react";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -45,16 +52,37 @@ interface ExtractionResult {
   usedMock: boolean;
   extractionTime: number;
   errorMessage?: string;
+  ocrPdfBase64?: string;
+  ocr?: {
+    applied: boolean;
+    available: boolean;
+    charsBefore: number;
+    charsAfter: number;
+    pageCount: number;
+    timeMs: number;
+  };
 }
 
 interface AIAnalysis {
-  fundName: string;
-  suitability: { rating: string; score: number; headline: string; detail: string };
-  volatility: { level: string; headline: string; detail: string };
-  longTermPerformance: { headline: string; detail: string };
-  feeCaution: { level: string; headline: string; detail: string };
-  diversification: { headline: string; detail: string };
+  documentTitle: string;
+  insights: Array<{
+    category: string;
+    headline: string;
+    detail: string;
+    badge: string;
+    relatedKeys: string[];
+  }>;
   summary: string;
+}
+
+function getInsightIcon(category: string): React.ElementType {
+  const c = category.toLowerCase();
+  if (c.includes("risk") || c.includes("suitability") || c.includes("security") || c.includes("compliance")) return Shield;
+  if (c.includes("performance") || c.includes("return") || c.includes("growth") || c.includes("trend")) return TrendingUp;
+  if (c.includes("fee") || c.includes("cost") || c.includes("expense") || c.includes("price") || c.includes("rate")) return DollarSign;
+  if (c.includes("diversif") || c.includes("allocation") || c.includes("portfolio") || c.includes("holding")) return PieChart;
+  if (c.includes("volatility") || c.includes("stat") || c.includes("metric") || c.includes("ratio") || c.includes("volume")) return BarChart3;
+  return Sparkles;
 }
 
 // ─── Step Indicator ──────────────────────────────────────────────────────────
@@ -78,6 +106,98 @@ function StepBadge({
       }`}
     >
       {done ? <CheckCircle2 className="w-4 h-4" /> : number}
+    </div>
+  );
+}
+
+// ─── Demo stage model (shared by sidebar + mobile progress bar) ──────────────
+const DEMO_STAGES: Array<{ n: number; label: string; hint: string; icon: React.ElementType }> = [
+  { n: 1, label: "Upload Document", hint: "Drop a PDF", icon: Upload },
+  { n: 2, label: "Detect & OCR", hint: "Scan? OCR if needed", icon: ScanText },
+  { n: 3, label: "Extract Key-Value", hint: "Structured JSON", icon: FileSearch },
+  { n: 4, label: "AI Analysis", hint: "Interpret the data", icon: Sparkles },
+  { n: 5, label: "Advisory Insights", hint: "Annotated results", icon: BarChart3 },
+];
+
+// ─── Sticky progress sidebar — always shows the audience the current stage ────
+function StageSidebar({ currentStage }: { currentStage: number }) {
+  return (
+    <nav aria-label="Demo progress" className="space-y-0.5">
+      <p className="text-xs font-semibold uppercase tracking-widest text-muted-foreground mb-3 px-2">
+        Demo Progress
+      </p>
+      {DEMO_STAGES.map((s, i) => {
+        const done = currentStage > s.n;
+        const active = currentStage === s.n;
+        const Icon = s.icon;
+        return (
+          <div key={s.n} className="relative">
+            {i < DEMO_STAGES.length - 1 && (
+              <span
+                className={`absolute left-[26px] top-[42px] h-[calc(100%-26px)] w-0.5 ${
+                  done ? "bg-primary" : "bg-border"
+                }`}
+              />
+            )}
+            <div
+              className={`flex items-center gap-3 rounded-lg px-2 py-2 transition-all duration-300 ${
+                active ? "bg-primary/10 border border-primary/30" : "border border-transparent"
+              }`}
+            >
+              <div
+                className={`w-9 h-9 rounded-full flex items-center justify-center shrink-0 transition-all duration-300 ${
+                  done
+                    ? "bg-primary text-primary-foreground"
+                    : active
+                    ? "bg-primary/20 text-primary border-2 border-primary animate-pulse"
+                    : "bg-muted text-muted-foreground border-2 border-border"
+                }`}
+              >
+                {done ? <CheckCircle2 className="w-4 h-4" /> : <Icon className="w-4 h-4" />}
+              </div>
+              <div className="min-w-0">
+                <p
+                  className={`text-sm font-semibold leading-tight truncate ${
+                    active ? "text-foreground" : done ? "text-foreground/80" : "text-muted-foreground"
+                  }`}
+                >
+                  {s.label}
+                </p>
+                <p className="text-[11px] text-muted-foreground/70 leading-tight">
+                  {done ? "Done" : active ? "In progress…" : s.hint}
+                </p>
+              </div>
+            </div>
+          </div>
+        );
+      })}
+    </nav>
+  );
+}
+
+// ─── Compact horizontal progress for small screens ───────────────────────────
+function MobileStageBar({ currentStage }: { currentStage: number }) {
+  const active = DEMO_STAGES.find((s) => s.n === currentStage);
+  return (
+    <div className="lg:hidden sticky top-[57px] z-[5] -mx-4 mb-2 px-4 py-2.5 bg-background/95 backdrop-blur border-b border-border/60">
+      <div className="flex items-center gap-1.5 mb-1.5">
+        {DEMO_STAGES.map((s) => {
+          const done = currentStage > s.n;
+          const isActive = currentStage === s.n;
+          return (
+            <div
+              key={s.n}
+              className={`h-1.5 flex-1 rounded-full transition-all duration-300 ${
+                done ? "bg-primary" : isActive ? "bg-primary/50" : "bg-muted"
+              }`}
+            />
+          );
+        })}
+      </div>
+      <p className="text-xs font-medium text-foreground">
+        <span className="text-primary">Step {currentStage}/5</span>
+        {active ? ` · ${active.label}` : ""}
+      </p>
     </div>
   );
 }
@@ -247,6 +367,7 @@ function InsightSkeleton() {
 
 // ─── Main Page ────────────────────────────────────────────────────────────────
 export default function Home() {
+  const [demoMode, setDemoMode] = useState<"extract" | "form">("extract");
   const [uploadedFile, setUploadedFile] = useState<File | null>(null);
   const [uploadedFileUrl, setUploadedFileUrl] = useState<string | null>(null);
   const [isDragging, setIsDragging] = useState(false);
@@ -254,19 +375,21 @@ export default function Home() {
   const [aiAnalysis, setAiAnalysis] = useState<AIAnalysis | null>(null);
   const [showPDFViewer, setShowPDFViewer] = useState(false);
   const [showAnnotatedPDF, setShowAnnotatedPDF] = useState(false);
+  const [ocrInfo, setOcrInfo] = useState<NonNullable<ExtractionResult["ocr"]> | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const extractMutation = trpc.extraction.extractData.useMutation({
+  // Phase 2 — extract key-value data from the OCR'd copy (token-based).
+  const extractMutation = trpc.extraction.extractFromToken.useMutation({
     onSuccess: (data) => {
       const result = data as ExtractionResult;
       if (!result.success) {
-        // Real SDK error — surface the actual message so the user can act on it
         toast.error(`Extraction failed: ${result.errorMessage ?? "Unknown error"}`, {
           duration: 8000,
         });
         return;
       }
       setExtractionResult(result);
+      if (result.ocr) setOcrInfo(result.ocr);
       setShowPDFViewer(false);
       if (result.usedMock) {
         toast.info("Demo mode (USE_MOCK_DATA=true): showing pre-extracted sample output.", {
@@ -278,6 +401,28 @@ export default function Home() {
     },
     onError: (err) => {
       toast.error(`Extraction failed: ${err.message}`);
+    },
+  });
+
+  // Phase 1 — detect scanned pages and OCR if needed, then chain into extraction.
+  const ocrMutation = trpc.extraction.detectAndOcr.useMutation({
+    onSuccess: (data) => {
+      if (!data.success || !data.token) {
+        toast.error(`Scan check failed: ${data.errorMessage ?? "Unknown error"}`, {
+          duration: 8000,
+        });
+        return;
+      }
+      if (data.ocr) setOcrInfo(data.ocr);
+      if (data.ocr?.applied) {
+        toast.success(
+          `Scanned document detected — OCR recovered ${data.ocr.charsAfter.toLocaleString()} chars`
+        );
+      }
+      extractMutation.mutate({ token: data.token });
+    },
+    onError: (err) => {
+      toast.error(`Scan check failed: ${err.message}`);
     },
   });
 
@@ -312,6 +457,7 @@ export default function Home() {
         return URL.createObjectURL(file);
       });
 
+      setOcrInfo(null);
       setExtractionResult(null);
       setAiAnalysis(null);
       setShowPDFViewer(false);
@@ -320,11 +466,12 @@ export default function Home() {
       const reader = new FileReader();
       reader.onload = (e) => {
         const base64 = (e.target?.result as string).split(",")[1];
-        extractMutation.mutate({ pdfBase64: base64, fileName: file.name });
+        // Phase 1: detect scanned pages + OCR. onSuccess chains into extraction.
+        ocrMutation.mutate({ pdfBase64: base64, fileName: file.name });
       };
       reader.readAsDataURL(file);
     },
-    [extractMutation]
+    [ocrMutation]
   );
 
   const handleDrop = useCallback(
@@ -343,12 +490,59 @@ export default function Home() {
   };
 
   // ── Step states ────────────────────────────────────────────────────────────
-  const step1Done = !!uploadedFile && !extractMutation.isPending;
-  const step2Done = !!extractionResult;
-  const step3Done = !!aiAnalysis;
-
+  const isOcring = ocrMutation.isPending;
   const isExtracting = extractMutation.isPending;
   const isAnalyzing = analyzeMutation.isPending;
+
+  const step1Done = !!uploadedFile && !isOcring;
+  const ocrDone = !!ocrInfo;              // detect / OCR phase finished
+  const extractDone = !!extractionResult; // extraction finished
+  const analysisDone = !!aiAnalysis;
+
+  // Single source of truth for the progress sidebar's highlighted stage.
+  const currentStage = aiAnalysis
+    ? 5
+    : isAnalyzing
+    ? 4
+    : extractionResult
+    ? 3
+    : isExtracting
+    ? 3
+    : uploadedFile || isOcring
+    ? 2
+    : 1;
+
+  // ── OCR step numbers ────────────────────────────────────────────────────────
+  // Real per-file counts come back from the server on the extraction result.
+  // Before a file is processed we show a representative sample (a 5-page scan).
+  const ocr = ocrInfo;
+  const ocrIsLive = !!ocr;
+  const ocrBefore = ocr ? ocr.charsBefore : 0;
+  const ocrAfter = ocr ? ocr.charsAfter : 0;
+  const ocrApplied = ocr ? ocr.applied : true;
+  const ocrSeconds = ocr ? (ocr.timeMs / 1000).toFixed(1) : "27";
+  const ocrPages = ocr ? ocr.pageCount : 5;
+
+  // ── Token benchmark live data — built from real extraction output ──────────
+  const tokenLiveData = useMemo((): LiveTokenData | undefined => {
+    if (!extractionResult || !ocrInfo || !uploadedFile) return undefined;
+    const pages = (extractionResult.data.pages as Array<{
+      keyValueElements?: Array<{ key_text: string; value_text: string; confidence: number }>;
+    }>) || [];
+    const flatPairs = pages.flatMap(p =>
+      (p.keyValueElements || [])
+        .filter(e => e.key_text && e.value_text)
+        .map(e => `${e.key_text}: ${e.value_text} (conf: ${Math.round(e.confidence * 100)}%)`)
+    );
+    return {
+      rawChars: ocrInfo.applied ? ocrInfo.charsAfter : ocrInfo.charsBefore,
+      structPayloadChars: flatPairs.join("\n").length,
+      pageCount: ocrInfo.pageCount,
+      kvPairs: flatPairs.length,
+      fileName: uploadedFile.name,
+      fileSizeKb: Math.round(uploadedFile.size / 102.4) / 10,
+    };
+  }, [extractionResult, ocrInfo, uploadedFile]);
 
   // ── Get pairs for WebViewer ────────────────────────────────────────────────
   // Support TWO schemas coming from the server:
@@ -395,19 +589,6 @@ export default function Home() {
       )
     : [];
 
-  // ── Color helpers ──────────────────────────────────────────────────────────
-  const getSuitabilityColor = (rating: string) => {
-    if (rating === "Conservative") return "bg-green-500/20 text-green-400 border-green-500/30";
-    if (rating === "Moderate") return "bg-yellow-500/20 text-yellow-400 border-yellow-500/30";
-    return "bg-red-500/20 text-red-400 border-red-500/30";
-  };
-
-  const getFeeColor = (level: string) => {
-    if (level === "Low") return "secondary";
-    if (level === "Moderate") return "outline";
-    return "destructive";
-  };
-
   return (
     <div className="min-h-screen bg-background">
       {/* ── Header ─────────────────────────────────────────────────────────── */}
@@ -419,10 +600,10 @@ export default function Home() {
             </div>
             <div>
               <h1 className="text-sm font-bold text-white leading-none">
-                Apryse Investment Intelligence
+                Act 1 — Apryse Document Intelligence
               </h1>
               <p className="text-xs text-white/60 mt-0.5">
-                Powered by Apryse Server SDK · Singapore Private Banking
+                Powered by Apryse Server SDK · Banking Document Automation
               </p>
             </div>
           </div>
@@ -440,32 +621,81 @@ export default function Home() {
             90-Second Executive Demo
           </p>
           <h2 className="text-3xl sm:text-4xl font-bold text-foreground leading-tight mb-3">
-            From PDF to{" "}
-            <span className="text-red-gradient">AI Advisory</span>
-            <br />in four steps
+            From document to{" "}
+            <span className="text-red-gradient">assessment-ready data</span>
+            <br />in five steps
           </h2>
-          <p className="text-muted-foreground text-base leading-relaxed">
-            Upload any investment fact sheet. Apryse's Server SDK automatically extracts
-            every key-value pair with exact coordinates — no templates, no manual mapping.
-            Then let AI turn raw data into actionable client insights, annotated directly onto the PDF.
+          <p className="reader-prose-secondary leading-relaxed">
+            Upload any document — payslip, bank statement, amendment or contract. Apryse's Server SDK
+            automatically extracts every key-value pair with exact coordinates — no templates, no manual
+            rekeying. Then let AI turn raw data into structured assessment insights, annotated directly onto the PDF.
           </p>
         </div>
       </section>
+      {/* ── 2-Slide Context: set the stage before the live demo ───────── */}
+      <DemoContextIntro />
+
+      {/* ── Demo mode tab switcher ──────────────────────────────────────── */}
+      <div className="container">
+        <div className="inline-flex rounded-xl border border-border/60 bg-muted/40 p-1 gap-1">
+          <button
+            onClick={() => setDemoMode("extract")}
+            className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-semibold transition-all duration-200 ${
+              demoMode === "extract"
+                ? "bg-card border border-border shadow-sm text-foreground"
+                : "text-muted-foreground hover:text-foreground"
+            }`}
+          >
+            <FileSearch className="w-4 h-4" />
+            Document Intelligence
+          </button>
+          <button
+            onClick={() => setDemoMode("form")}
+            className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-semibold transition-all duration-200 ${
+              demoMode === "form"
+                ? "bg-card border border-border shadow-sm text-foreground"
+                : "text-muted-foreground hover:text-foreground"
+            }`}
+          >
+            <ScanText className="w-4 h-4" />
+            Form Recognition &amp; Auto-fill
+          </button>
+        </div>
+      </div>
+
+      {/* ── Form Recognition path ────────────────────────────────────────── */}
+      {demoMode === "form" && (
+        <div className="container pb-16">
+          <div className="rounded-2xl border border-border/50 bg-card p-6">
+            <FormRecognitionFlow />
+          </div>
+        </div>
+      )}
 
       {/* ── Steps ──────────────────────────────────────────────────────────── */}
-      <main className="container pb-16 space-y-6">
+      {demoMode === "extract" && (
+      <div className="container pb-16">
+        <div className="flex gap-6 items-start">
+          {/* Sticky progress sidebar — always visible to the audience */}
+          <aside className="hidden lg:block w-56 shrink-0 sticky top-20 self-start">
+            <StageSidebar currentStage={currentStage} />
+          </aside>
+
+          <main className="flex-1 min-w-0 space-y-6">
+            {/* Mobile progress bar */}
+            <MobileStageBar currentStage={currentStage} />
 
         {/* ── STEP 1: Upload PDF ─────────────────────────────────────────── */}
         <section
           className={`bg-card rounded-2xl border transition-all duration-300 overflow-hidden ${
-            !uploadedFile || isExtracting ? "border-primary/40 step-active" : "border-border/50"
+            !uploadedFile || isOcring || isExtracting ? "border-primary/40 step-active" : "border-border/50"
           }`}
         >
           <div className="p-6">
             <div className="flex items-center gap-3 mb-5">
               <StepBadge number={1} active={!uploadedFile} done={step1Done} />
               <div>
-                <h3 className="text-base font-semibold text-foreground">Upload Investment Fact Sheet</h3>
+                <h3 className="text-base font-semibold text-foreground">Upload Document</h3>
                 <p className="text-sm text-muted-foreground">
                   Drop any PDF — Apryse SDK handles the rest
                 </p>
@@ -481,7 +711,7 @@ export default function Home() {
               className={`relative border-2 border-dashed rounded-xl p-8 text-center cursor-pointer transition-all duration-200 ${
                 isDragging
                   ? "border-primary bg-primary/10 scale-[1.01]"
-                  : isExtracting
+                  : isOcring || isExtracting
                   ? "border-primary/40 bg-primary/5"
                   : uploadedFile
                   ? "border-green-500/40 bg-green-500/5"
@@ -498,15 +728,21 @@ export default function Home() {
                   if (file) handleFile(file);
                 }}
               />
-              {isExtracting ? (
+              {isOcring || isExtracting ? (
                 <div className="flex flex-col items-center gap-3">
                   <div className="w-12 h-12 rounded-full bg-primary/10 flex items-center justify-center">
                     <Loader2 className="w-6 h-6 text-primary animate-spin" />
                   </div>
                   <div>
-                    <p className="text-sm font-semibold text-foreground mb-1">Extracting data…</p>
+                    <p className="text-sm font-semibold text-foreground mb-1">
+                      {isOcring
+                        ? "Step 2 · Checking text layer & running OCR if scanned…"
+                        : "Step 3 · Extracting key-value data…"}
+                    </p>
                     <p className="text-xs text-muted-foreground font-mono">
-                      DataExtractionModule.extractData("{uploadedFile?.name}", "output.json", e_generic_key_value)
+                      {isOcring
+                        ? `OCRModule.processPDF("${uploadedFile?.name}")`
+                        : `DataExtractionModule.extractData("${uploadedFile?.name}", "output.json", e_generic_key_value)`}
                     </p>
                   </div>
                 </div>
@@ -529,7 +765,7 @@ export default function Home() {
                   </div>
                   <div>
                     <p className="text-sm font-semibold text-foreground mb-1">
-                      Drop your investment fact sheet here
+                      Drop your document here
                     </p>
                     <p className="text-xs text-muted-foreground">PDF files up to 20MB · or click to browse</p>
                   </div>
@@ -541,7 +777,7 @@ export default function Home() {
             <div className="mt-4 rounded-lg bg-slate-900 border border-slate-700 p-3">
               <p className="text-xs text-slate-400 mb-1.5 font-medium">Apryse Server SDK call:</p>
               <code className="text-xs text-green-400 font-mono leading-relaxed">
-                DataExtractionModule.extractData(<span className="text-yellow-300">"InvestmentFactSheet.pdf"</span>,{" "}
+                DataExtractionModule.extractData(<span className="text-yellow-300">"LoanApplication.pdf"</span>,{" "}
                 <span className="text-yellow-300">"output.json"</span>,{" "}
                 DataExtractionModule.DataExtractionEngine.<span className="text-red-400">e_generic_key_value</span>);
               </code>
@@ -549,7 +785,166 @@ export default function Home() {
           </div>
         </section>
 
-        {/* ── STEP 2: Extracted JSON + PDF Viewer ────────────────────────── */}
+        {/* ── STEP 2: OCR — make scanned pages machine-readable ─────────── */}
+        <section
+          className={`bg-card rounded-2xl border transition-all duration-300 overflow-hidden ${
+            isOcring ? "border-primary/40 step-active" : "border-border/50"
+          } ${!uploadedFile ? "opacity-60" : ""}`}
+        >
+          <div className="p-6">
+            <div className="flex items-center gap-3 mb-5">
+              <StepBadge number={2} active={isOcring} done={ocrDone} />
+              <div className="flex-1">
+                <h3 className="text-base font-semibold text-foreground">
+                  Auto-Detect Scanned Pages → OCR Only If Needed
+                </h3>
+                <p className="text-sm text-muted-foreground">
+                  Before extraction, Apryse reads the PDF's text layer. Image-only scans have{" "}
+                  <span className="font-medium text-foreground">no text</span>, so OCR runs automatically to
+                  add one. Digital PDFs already have text, so OCR is skipped — no wasted time.
+                </p>
+              </div>
+              <Badge variant="secondary" className="text-xs shrink-0 hidden sm:inline-flex">
+                Deep-learning OCR
+              </Badge>
+            </div>
+
+            {/* Detection status — shows the detect → decide → OCR decision for this file */}
+            <div
+              className={`mb-4 rounded-xl border p-4 ${
+                !ocrIsLive
+                  ? "border-border/50 bg-muted/40"
+                  : ocrApplied
+                  ? "border-amber-500/30 bg-amber-500/5"
+                  : "border-blue-500/30 bg-blue-500/5"
+              }`}
+            >
+              <div className="flex items-start gap-3">
+                <div className="mt-0.5 shrink-0">
+                  {!ocrIsLive ? (
+                    <FileSearch className="w-5 h-5 text-muted-foreground" />
+                  ) : ocrApplied ? (
+                    <ScanText className="w-5 h-5 text-amber-500" />
+                  ) : (
+                    <CheckCircle2 className="w-5 h-5 text-blue-400" />
+                  )}
+                </div>
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span className="text-sm font-semibold text-foreground">
+                      {!ocrIsLive
+                        ? "Step 1 — read text layer · Step 2 — decide · Step 3 — OCR if scanned"
+                        : ocrApplied
+                        ? "Scanned document detected — OCR applied automatically"
+                        : "Digital PDF detected — OCR skipped automatically"}
+                    </span>
+                    {ocrIsLive && (
+                      <Badge
+                        variant={ocrApplied ? "secondary" : "outline"}
+                        className="text-[10px]"
+                      >
+                        {ocrApplied ? "OCR ran" : "not needed"}
+                      </Badge>
+                    )}
+                  </div>
+                  <p className="text-xs text-muted-foreground mt-1 leading-relaxed">
+                    {!ocrIsLive
+                      ? "On every upload, Apryse checks the PDF's text layer first. Empty layer → it's a scan → OCR runs before extraction. Text already present → OCR is skipped. Upload a document to see the decision for your file."
+                      : ocrApplied
+                      ? `Apryse read only ${ocrBefore.toLocaleString()} characters in this ${ocrPages}-page file's text layer — that's a scan. OCR ran automatically and recovered ${ocrAfter.toLocaleString()} characters before extraction.`
+                      : `Apryse found ${ocrBefore.toLocaleString()} characters already in this ${ocrPages}-page file's text layer, so it's a digital PDF. OCR was skipped and extraction ran directly.`}
+                  </p>
+                </div>
+              </div>
+            </div>
+
+            {/* Before / After OCR proof */}
+            <div className="rounded-xl bg-muted/40 border border-border/50 p-4">
+              <div className="flex flex-col sm:flex-row items-stretch gap-3">
+                {/* Before OCR */}
+                <div className="flex-1 rounded-lg border border-red-500/30 bg-red-500/5 p-4">
+                  <div className="flex items-center gap-2 mb-2">
+                    <AlertTriangle className="w-4 h-4 text-red-400" />
+                    <span className="text-xs font-semibold text-foreground">
+                      {ocrIsLive ? "Your document · before OCR" : "Scanned page · before OCR"}
+                    </span>
+                  </div>
+                  <p className="text-2xl font-bold text-red-400">
+                    {ocrBefore.toLocaleString()} chars
+                  </p>
+                  <p className="text-xs text-muted-foreground mt-1">
+                    {ocrBefore === 0
+                      ? "A plain text extractor reads nothing — the page is just pixels."
+                      : "Text the raw PDF exposes to a plain extractor before OCR."}
+                  </p>
+                </div>
+
+                {/* Arrow */}
+                <div className="flex sm:flex-col items-center justify-center text-primary shrink-0">
+                  <ArrowRight className="w-6 h-6 hidden sm:block" />
+                  <ScanText className="w-6 h-6 sm:hidden" />
+                </div>
+
+                {/* After OCR */}
+                <div className="flex-1 rounded-lg border border-green-500/30 bg-green-500/5 p-4">
+                  <div className="flex items-center gap-2 mb-2">
+                    <CheckCircle2 className="w-4 h-4 text-green-400" />
+                    <span className="text-xs font-semibold text-foreground">
+                      After OCRModule.processPDF
+                    </span>
+                  </div>
+                  <p className="text-2xl font-bold text-green-400">
+                    {ocrIsLive ? ocrAfter.toLocaleString() : "—"} {ocrIsLive ? "chars" : ""}
+                  </p>
+                  <p className="text-xs text-muted-foreground mt-1">
+                    {!ocrIsLive
+                      ? "Waiting for OCR to complete…"
+                      : ocrApplied
+                      ? "A searchable text layer is burned in — extraction can now read every word."
+                      : "This PDF already had a text layer — OCR wasn't needed."}
+                  </p>
+                  {ocrIsLive && ocrApplied && extractionResult?.ocrPdfBase64 && (
+                    <button
+                      className="mt-2 text-[11px] text-green-400 underline underline-offset-2 hover:text-green-300 transition-colors"
+                      onClick={() => {
+                        const a = document.createElement("a");
+                        a.href = `data:application/pdf;base64,${extractionResult.ocrPdfBase64}`;
+                        a.download = `${uploadedFile?.name.replace(/\.pdf$/i, "") ?? "document"}-ocr.pdf`;
+                        a.click();
+                      }}
+                    >
+                      Download OCR'd PDF
+                    </button>
+                  )}
+                </div>
+              </div>
+              <p className="text-[11px] text-muted-foreground/70 mt-3">
+                {ocrIsLive
+                  ? ocrApplied
+                    ? `Measured on your ${ocrPages}-page document · English · Apryse deep-learning OCR engine (~${ocrSeconds}s).`
+                    : `Measured on your ${ocrPages}-page document · text layer already present, so OCR was skipped.`
+                  : "Sample: 5-page scanned statement · English · Apryse deep-learning OCR engine (~27s). Upload a document to see your own numbers."}
+              </p>
+            </div>
+
+            {/* SDK code snippet */}
+            <div className="mt-4 rounded-lg bg-slate-900 border border-slate-700 p-3">
+              <p className="text-xs text-slate-400 mb-1.5 font-medium">Apryse Server SDK — detect, then OCR only if needed:</p>
+              <code className="text-xs text-green-400 font-mono leading-relaxed block whitespace-pre-wrap">
+                <span className="text-slate-500">{"// 1. Read the existing text layer"}</span>{"\n"}
+                <span className="text-slate-500">const</span> chars = TextExtractor.<span className="text-yellow-300">getText</span>(doc).length;{"\n"}
+                <span className="text-slate-500">{"// 2. Empty layer → it's a scan → OCR before extraction"}</span>{"\n"}
+                <span className="text-purple-400">if</span> (chars &lt; threshold) {"{"}{"\n"}
+                {"  "}<span className="text-slate-500">const</span> opts = <span className="text-slate-500">await</span> OCRModule.<span className="text-yellow-300">createOCROptions</span>();{"\n"}
+                {"  "}opts.<span className="text-yellow-300">addLang</span>(<span className="text-yellow-300">"eng"</span>);{"\n"}
+                {"  "}<span className="text-slate-500">await</span> OCRModule.<span className="text-red-400">processPDF</span>(doc, opts);{"\n"}
+                {"}"}
+              </code>
+            </div>
+          </div>
+        </section>
+
+        {/* ── STEP 3: Extracted JSON + PDF Viewer ────────────────────────── */}
         <section
           className={`bg-card rounded-2xl border transition-all duration-300 overflow-hidden ${
             extractionResult && !aiAnalysis ? "border-primary/40 step-active" : "border-border/50"
@@ -557,7 +952,7 @@ export default function Home() {
         >
           <div className="p-6">
             <div className="flex items-center gap-3 mb-5">
-              <StepBadge number={2} active={isExtracting} done={step2Done} />
+              <StepBadge number={3} active={isExtracting} done={extractDone} />
               <div className="flex-1">
                 <h3 className="text-base font-semibold text-foreground">Extracted Key-Value Data</h3>
                 <p className="text-sm text-muted-foreground">
@@ -574,6 +969,23 @@ export default function Home() {
                   <Badge variant="secondary" className="text-xs">
                     {extractionResult.extractionTime}ms
                   </Badge>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="shrink-0 h-7 px-2 text-xs"
+                    onClick={() => {
+                      const blob = new Blob([JSON.stringify(extractionResult.data, null, 2)], { type: "application/json" });
+                      const url = URL.createObjectURL(blob);
+                      const a = document.createElement("a");
+                      a.href = url;
+                      a.download = uploadedFile ? `${uploadedFile.name.replace(/\.pdf$/i, "")}-extraction.json` : "extraction-output.json";
+                      a.click();
+                      URL.revokeObjectURL(url);
+                    }}
+                  >
+                    <Download className="w-3 h-3 mr-1" />
+                    Download JSON
+                  </Button>
                 </div>
               )}
             </div>
@@ -647,7 +1059,21 @@ export default function Home() {
           </div>
         </section>
 
-        {/* ── STEP 3: Analyze with AI ────────────────────────────────────── */}
+        {/* ── TOKEN BENCHMARK (after Step 3, hidden until extraction done) ─── */}
+        {extractDone && (
+          <section className="bg-card rounded-2xl border border-border/50 overflow-hidden animate-fade-in-up">
+            <MeasuredTokenBenchmark liveData={tokenLiveData} />
+          </section>
+        )}
+
+        {/* ── MODEL FLEXIBILITY (Apryse JSON → local model) ────────────────── */}
+        {extractDone && (
+          <section className="bg-card rounded-2xl border border-border/50 overflow-hidden animate-fade-in-up">
+            <LocalModelSection />
+          </section>
+        )}
+
+        {/* ── STEP 4: Analyze with AI ────────────────────────────────────── */}
         <section
           className={`bg-card rounded-2xl border transition-all duration-300 overflow-hidden ${
             extractionResult && !aiAnalysis && !isAnalyzing ? "border-primary/40 step-active" : "border-border/50"
@@ -655,11 +1081,11 @@ export default function Home() {
         >
           <div className="p-6">
             <div className="flex items-center gap-3 mb-5">
-              <StepBadge number={3} active={!!extractionResult && !aiAnalysis} done={step3Done} />
+              <StepBadge number={4} active={!!extractionResult && !aiAnalysis} done={analysisDone} />
               <div className="flex-1">
                 <h3 className="text-base font-semibold text-foreground">Analyze with AI</h3>
                 <p className="text-sm text-muted-foreground">
-                  LLM interprets extracted data into structured advisory insights
+                  LLM interprets extracted data into structured assessment insights
                 </p>
               </div>
             </div>
@@ -674,7 +1100,7 @@ export default function Home() {
                     </span>
                   </p>
                   <p className="text-xs text-muted-foreground">
-                    AI will assess suitability, volatility, performance, fees, and diversification — then annotate the PDF
+                    AI will analyze the extracted data and annotate key insights directly onto the PDF
                   </p>
                 </div>
                 <Button
@@ -695,7 +1121,7 @@ export default function Home() {
                 </div>
                 <p className="text-sm font-medium text-foreground">Analyzing with AI…</p>
                 <p className="text-xs text-muted-foreground">
-                  Generating suitability, volatility, performance, fee, and diversification insights
+                  Generating document insights from extracted data…
                 </p>
               </div>
             )}
@@ -709,7 +1135,7 @@ export default function Home() {
           </div>
         </section>
 
-        {/* ── STEP 4: AI Advisory Insights + Annotated PDF ──────────────── */}
+        {/* ── STEP 5: AI Advisory Insights + Annotated PDF ──────────────── */}
         <section
           className={`bg-card rounded-2xl border transition-all duration-300 overflow-hidden ${
             aiAnalysis ? "border-primary/40 step-active" : "border-border/50"
@@ -717,16 +1143,16 @@ export default function Home() {
         >
           <div className="p-6">
             <div className="flex items-center gap-3 mb-5">
-              <StepBadge number={4} active={isAnalyzing} done={step3Done} />
+              <StepBadge number={5} active={isAnalyzing} done={analysisDone} />
               <div>
                 <h3 className="text-base font-semibold text-foreground">AI Advisory Insights</h3>
                 <p className="text-sm text-muted-foreground">
-                  Structured analysis ready for relationship managers — annotated onto the PDF
+                  Structured analysis ready for lending assessors — annotated onto the PDF
                 </p>
               </div>
               {aiAnalysis && (
                 <Badge className="ml-auto shrink-0 bg-primary/20 text-primary border-primary/30 text-xs">
-                  {aiAnalysis.fundName}
+                  {aiAnalysis.documentTitle}
                 </Badge>
               )}
             </div>
@@ -735,60 +1161,24 @@ export default function Home() {
               <InsightSkeleton />
             ) : aiAnalysis ? (
               <div className="space-y-5 animate-fade-in-up">
-                {/* Insights grid */}
+                {/* Insights grid — dynamic, one card per LLM-chosen category */}
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                  <InsightCard
-                    icon={Shield}
-                    title="Suitability"
-                    headline={aiAnalysis.suitability.headline}
-                    detail={aiAnalysis.suitability.detail}
-                    badge={aiAnalysis.suitability.rating}
-                    className={`insight-suitability ${getSuitabilityColor(aiAnalysis.suitability.rating)}`}
-                    delay={0}
-                  />
-                  <InsightCard
-                    icon={BarChart3}
-                    title="Volatility"
-                    headline={aiAnalysis.volatility.headline}
-                    detail={aiAnalysis.volatility.detail}
-                    badge={aiAnalysis.volatility.level}
-                    badgeVariant={
-                      aiAnalysis.volatility.level === "Low"
-                        ? "secondary"
-                        : aiAnalysis.volatility.level === "High" || aiAnalysis.volatility.level === "Very High"
-                        ? "destructive"
-                        : "outline"
-                    }
-                    className="insight-volatility"
-                    delay={80}
-                  />
-                  <InsightCard
-                    icon={TrendingUp}
-                    title="Long-Term Performance"
-                    headline={aiAnalysis.longTermPerformance.headline}
-                    detail={aiAnalysis.longTermPerformance.detail}
-                    className="insight-performance"
-                    delay={160}
-                  />
-                  <InsightCard
-                    icon={DollarSign}
-                    title="Fee Caution"
-                    headline={aiAnalysis.feeCaution.headline}
-                    detail={aiAnalysis.feeCaution.detail}
-                    badge={`${aiAnalysis.feeCaution.level} fees`}
-                    badgeVariant={getFeeColor(aiAnalysis.feeCaution.level) as "default" | "secondary" | "destructive" | "outline"}
-                    className="insight-fees"
-                    delay={240}
-                  />
-                  <div className="md:col-span-2 animate-fade-in-up" style={{ animationDelay: "320ms" }}>
-                    <InsightCard
-                      icon={PieChart}
-                      title="Diversification"
-                      headline={aiAnalysis.diversification.headline}
-                      detail={aiAnalysis.diversification.detail}
-                      className="insight-diversification"
-                    />
-                  </div>
+                  {aiAnalysis.insights.map((insight, idx) => {
+                    const isLastOdd = idx === aiAnalysis.insights.length - 1 && aiAnalysis.insights.length % 2 !== 0;
+                    return (
+                      <div key={idx} className={isLastOdd ? "md:col-span-2" : ""} style={{ animationDelay: `${idx * 80}ms` }}>
+                        <InsightCard
+                          icon={getInsightIcon(insight.category)}
+                          title={insight.category}
+                          headline={insight.headline}
+                          detail={insight.detail}
+                          badge={insight.badge || undefined}
+                          badgeVariant="outline"
+                          delay={idx * 80}
+                        />
+                      </div>
+                    );
+                  })}
                 </div>
 
                 {/* Executive summary — Azalea tint, NO black */}
@@ -808,6 +1198,27 @@ export default function Home() {
                     </Badge>
                   </div>
                   <p className="text-sm text-foreground leading-relaxed">{aiAnalysis.summary}</p>
+                </div>
+
+                {/* ── Why this analysis was token-efficient ─────────────── */}
+                <div className="rounded-xl border border-green-400/40 bg-green-50/50 p-4 animate-fade-in-up" style={{ animationDelay: "440ms" }}>
+                  <div className="flex items-center gap-2 mb-2">
+                    <BarChart3 className="w-4 h-4 text-green-700 shrink-0" />
+                    <p className="text-sm font-medium text-foreground">Why this analysis was token-efficient</p>
+                  </div>
+                  {tokenLiveData ? (
+                    <p className="text-xs text-muted-foreground leading-relaxed">
+                      Apryse extracted{" "}
+                      <span className="text-foreground font-medium">{tokenLiveData.kvPairs} structured key-value pairs</span>{" "}
+                      (~{Math.round(tokenLiveData.structPayloadChars / 2.5).toLocaleString()} tokens) instead of sending the{" "}
+                      <span className="text-foreground font-medium">whole document as ~{Math.round(tokenLiveData.rawChars / 4).toLocaleString()} raw text tokens</span>.
+                      See the full token breakdown above ↑
+                    </p>
+                  ) : (
+                    <p className="text-xs text-muted-foreground leading-relaxed">
+                      Apryse extracted 31 structured key-value pairs (~551 tokens) — instead of sending ~2,146 raw text tokens. That's a 74.3% reduction, verified against Gemini's countTokens endpoint.
+                    </p>
+                  )}
                 </div>
 
                 {/* ── Annotated PDF Viewer ──────────────────────────────── */}
@@ -833,19 +1244,13 @@ export default function Home() {
                     </Button>
                   </div>
 
-                  {/* Annotation legend */}
+                  {/* Annotation legend — mirrors the INSIGHT_PALETTE order in PDFWebViewer */}
                   {showAnnotatedPDF && (
                     <div className="mb-3 flex flex-wrap gap-2">
-                      {[
-                        { label: "Suitability", color: "bg-green-400" },
-                        { label: "Volatility", color: "bg-orange-400" },
-                        { label: "Long-Term Performance", color: "bg-blue-400" },
-                        { label: "Fee Caution", color: "bg-red-400" },
-                        { label: "Diversification", color: "bg-purple-400" },
-                      ].map(({ label, color }) => (
-                        <span key={label} className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                      {["bg-green-400", "bg-red-400", "bg-blue-400", "bg-amber-400", "bg-purple-400"].slice(0, aiAnalysis.insights.length).map((color, idx) => (
+                        <span key={idx} className="flex items-center gap-1.5 text-xs text-muted-foreground">
                           <span className={`w-2.5 h-2.5 rounded-sm ${color} opacity-80`} />
-                          {label}
+                          {aiAnalysis.insights[idx].category}
                         </span>
                       ))}
                     </div>
@@ -853,7 +1258,7 @@ export default function Home() {
 
                   {showAnnotatedPDF && (
                     <div className="animate-fade-in-up">
-                      <AIAnnotationWebViewer analysis={aiAnalysis} />
+                      <AIAnnotationWebViewer analysis={aiAnalysis} pdfUrl={uploadedFileUrl ?? undefined} pairs={extractedPairs} />
                     </div>
                   )}
                 </div>
@@ -866,10 +1271,12 @@ export default function Home() {
                     onClick={() => {
                       setUploadedFile(null);
                       setUploadedFileUrl(prev => { if (prev) URL.revokeObjectURL(prev); return null; });
+                      setOcrInfo(null);
                       setExtractionResult(null);
                       setAiAnalysis(null);
                       setShowPDFViewer(false);
                       setShowAnnotatedPDF(false);
+                      ocrMutation.reset();
                       extractMutation.reset();
                       analyzeMutation.reset();
                     }}
@@ -887,9 +1294,12 @@ export default function Home() {
             )}
           </div>
         </section>
-      </main>
+          </main>
+        </div>
+      </div>
+      )}
 
-      {/* ── Why Apryse / OCBC Indonesia Context ──────────────────────── */}
+      {/* ── Why Apryse / Lending Fulfillment Context ──────────────────────── */}
       <div className="container pb-12">
         <WhyApryseSection />
       </div>

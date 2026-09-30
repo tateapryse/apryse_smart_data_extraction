@@ -32,6 +32,13 @@ async function startServer() {
   const app = express();
   const server = createServer(app);
 
+  // Required for WebAssembly threads (SharedArrayBuffer) used by WebViewer
+  app.use((_req, res, next) => {
+    res.setHeader("Cross-Origin-Opener-Policy", "same-origin");
+    res.setHeader("Cross-Origin-Embedder-Policy", "require-corp");
+    next();
+  });
+
   // Configure body parser with larger size limit for file uploads
   app.use(express.json({ limit: "50mb" }));
   app.use(express.urlencoded({ limit: "50mb", extended: true }));

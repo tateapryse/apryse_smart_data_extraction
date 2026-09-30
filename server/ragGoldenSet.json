@@ -1,0 +1,182 @@
+[
+  {
+    "id": "q01",
+    "tier": "prose",
+    "question": "What is the Contoso Cashew Fund's investment objective?",
+    "expected": "long-term capital appreciation"
+  },
+  {
+    "id": "q02",
+    "tier": "prose",
+    "question": "What size of companies does the fund primarily invest in?",
+    "expected": "small- and mid-sized companies with market capitalizations under $5 billion"
+  },
+  {
+    "id": "q03",
+    "tier": "prose",
+    "question": "Up to what percentage of total assets may the fund invest in foreign companies?",
+    "expected": "33%"
+  },
+  {
+    "id": "q04",
+    "tier": "prose",
+    "question": "Name one of the principal risks listed for this fund.",
+    "expected": "Emerging Markets (or Foreign Securities, Loss of Money, Not FDIC Insured, Market Volatility, Small Cap, Mid-Cap)"
+  },
+  {
+    "id": "q05",
+    "tier": "label-value",
+    "question": "What is the fund's ticker symbol?",
+    "expected": "CONCASH"
+  },
+  {
+    "id": "q06",
+    "tier": "label-value",
+    "question": "What is the fund's website address?",
+    "expected": "www.con-cashew.com"
+  },
+  {
+    "id": "q07",
+    "tier": "label-value",
+    "question": "What is the fund's inception date?",
+    "expected": "10/13/2000"
+  },
+  {
+    "id": "q08",
+    "tier": "label-value",
+    "question": "What are the fund's total net assets?",
+    "expected": "USD 17,180.2 million"
+  },
+  {
+    "id": "q09",
+    "tier": "label-value",
+    "question": "What is the fund's portfolio turnover?",
+    "expected": "18%"
+  },
+  {
+    "id": "q10",
+    "tier": "label-value",
+    "question": "What is the fund's 30-day SEC yield?",
+    "expected": "2.39%"
+  },
+  {
+    "id": "q11",
+    "tier": "label-value",
+    "question": "Who is the fund manager?",
+    "expected": "Porter/Posner"
+  },
+  {
+    "id": "q12",
+    "tier": "label-value",
+    "question": "What is the manager tenure?",
+    "expected": "16.5 years"
+  },
+  {
+    "id": "q13",
+    "tier": "label-value",
+    "question": "What is the Morningstar category for this fund?",
+    "expected": "Mid-Cap Growth"
+  },
+  {
+    "id": "q14",
+    "tier": "label-value",
+    "question": "What is the fund's operating expense ratio?",
+    "expected": "1.11%"
+  },
+  {
+    "id": "q15",
+    "tier": "label-value",
+    "question": "What is the maximum front load?",
+    "expected": "6.0%"
+  },
+  {
+    "id": "q16",
+    "tier": "label-value",
+    "question": "What is the maximum CDSC?",
+    "expected": "4.2%"
+  },
+  {
+    "id": "q17",
+    "tier": "label-value",
+    "question": "What is the maximum redemption fee?",
+    "expected": "1.5%"
+  },
+  {
+    "id": "q18",
+    "tier": "label-value",
+    "question": "What percentage of the portfolio is allocated to equity?",
+    "expected": "88%"
+  },
+  {
+    "id": "q19",
+    "tier": "label-value",
+    "question": "What is the fund's 3-year alpha?",
+    "expected": "-0.98"
+  },
+  {
+    "id": "q20",
+    "tier": "label-value",
+    "question": "What is the fund's 3-year beta?",
+    "expected": "1.20"
+  },
+  {
+    "id": "q21",
+    "tier": "label-value",
+    "question": "What is the fund's 3-year R-squared?",
+    "expected": "90.51"
+  },
+  {
+    "id": "q22",
+    "tier": "label-value",
+    "question": "What is the fund's 3-year standard deviation?",
+    "expected": "20.40"
+  },
+  {
+    "id": "q23",
+    "tier": "table",
+    "question": "What is the fund's year-to-date (YTD) return?",
+    "expected": "9.11%"
+  },
+  {
+    "id": "q24",
+    "tier": "table",
+    "question": "What is the fund's 1-year return?",
+    "expected": "-3.04%"
+  },
+  {
+    "id": "q25",
+    "tier": "table",
+    "question": "What is the fund's 3-year return?",
+    "expected": "18.29%"
+  },
+  {
+    "id": "q26",
+    "tier": "table",
+    "question": "What is the fund's 5-year return?",
+    "expected": "1.40%"
+  },
+  {
+    "id": "q27",
+    "tier": "table",
+    "question": "What is the fund's 10-year return?",
+    "expected": "9.22%"
+  },
+  {
+    "id": "q28",
+    "tier": "table",
+    "question": "What is the fund's since-inception return?",
+    "expected": "8.62%"
+  },
+  {
+    "id": "q29",
+    "tier": "table",
+    "question": "What is the benchmark's 3-year return?",
+    "expected": "19.01%"
+  },
+  {
+    "id": "q30",
+    "tier": "table",
+    "question": "What is the benchmark's 10-year return?",
+    "expected": "8.47%"
+  }
+]

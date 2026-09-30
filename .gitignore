@@ -14,6 +14,12 @@ build/
 .env.test.local
 .env.production.local
 
+# Apryse licensed vendor binaries (do not redistribute)
+apryse-ocr-module/
+
+# Runtime data: caches and uploaded/generated PDFs
+files/
+
 # IDE and editor files
 .vscode/
 .idea/

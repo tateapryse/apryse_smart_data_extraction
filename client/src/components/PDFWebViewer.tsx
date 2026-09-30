@@ -1,7 +1,13 @@
-import { useEffect, useRef, useState } from "react";
-import { Loader2 } from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { Loader2, Layers, CheckCircle2, GitCompareArrows } from "lucide-react";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
+interface WVDocument {
+  getFileData: (opts?: { flatten?: boolean; xfdfString?: string }) => Promise<ArrayBuffer>;
+}
+
 interface KeyValuePair {
   key: string;
   value: string;
@@ -15,12 +21,14 @@ interface KeyValuePair {
 }
 
 interface AIAnalysis {
-  fundName: string;
-  suitability: { rating: string; score: number; headline: string; detail: string };
-  volatility: { level: string; headline: string; detail: string };
-  longTermPerformance: { headline: string; detail: string };
-  feeCaution: { level: string; headline: string; detail: string };
-  diversification: { headline: string; detail: string };
+  documentTitle: string;
+  insights: Array<{
+    category: string;
+    headline: string;
+    detail: string;
+    badge: string;
+    relatedKeys: string[];
+  }>;
   summary: string;
 }
 
@@ -29,10 +37,12 @@ type WVInstance = {
   Core: {
     documentViewer: {
       addEventListener: (event: string, cb: () => void) => void;
+      getDocument: () => WVDocument;
     };
     annotationManager: {
       addAnnotations: (annotations: unknown[]) => void;
       drawAnnotationsFromList: (annotations: unknown[]) => void;
+      exportAnnotations: () => Promise<string>;
     };
     Annotations: {
       RectangleAnnotation: new () => RectAnnot;
@@ -62,10 +72,45 @@ const ENV_LICENSE_KEY = import.meta.env.VITE_APRYSE_LICENSE_KEY as string | unde
 
 const DEMO_PDF_URL = "https://d2xsxph8kpxj0f.cloudfront.net/310519663271420096/4Vny8aZvPW3bDSPWHgiJMF/OUTPUT-8ed22c_d467d567.pdf";
 
+// Compact loader for side-by-side comparison panels — hides annotation/shape toolbars
+async function loadCompactViewer(
+  container: HTMLDivElement,
+  url: string,
+  licenseKey?: string,
+  readOnly = false
+): Promise<WVInstance> {
+  const mod = await import("@pdftron/webviewer");
+  const WebViewer = mod.default;
+  return WebViewer(
+    {
+      path: "/lib/webviewer",
+      licenseKey: licenseKey || ENV_LICENSE_KEY || undefined,
+      initialDoc: url,
+      disabledElements: [
+        "toolbarGroup-Annotate",
+        "toolbarGroup-Shapes",
+        "toolbarGroup-Insert",
+        "toolbarGroup-Measure",
+        "toolbarGroup-Edit",
+        "toolbarGroup-FillAndSign",
+        "toolbarGroup-Forms",
+        "menuButton",
+        "leftPanelButton",
+        "searchButton",
+        "annotationCommentButton",
+        "printButton",
+      ],
+      isReadOnly: readOnly,
+    },
+    container
+  ) as unknown as Promise<WVInstance>;
+}
+
 async function loadWebViewer(
   container: HTMLDivElement,
   licenseKey?: string,
-  initialDoc?: string
+  initialDoc?: string,
+  fullAPI = false
 ): Promise<WVInstance> {
   const mod = await import("@pdftron/webviewer");
   const WebViewer = mod.default;
@@ -74,6 +119,7 @@ async function loadWebViewer(
       path: "/lib/webviewer",
       licenseKey: licenseKey || ENV_LICENSE_KEY || undefined,
       initialDoc: initialDoc || DEMO_PDF_URL,
+      fullAPI,
       disabledElements: [
         "toolbarGroup-Annotate",
         "toolbarGroup-Shapes",
@@ -276,16 +322,50 @@ export function ExtractionWebViewer({
   );
 }
 
+// Color palette for up to 5 insight annotations (matches legend in Home.tsx)
+const INSIGHT_PALETTE: Array<{ fill: [number, number, number]; stroke: [number, number, number] }> = [
+  { fill: [34, 197, 94],   stroke: [22, 163, 74]  },  // green
+  { fill: [239, 24, 21],  stroke: [180, 10, 5]   },  // red
+  { fill: [37, 99, 235],  stroke: [29, 78, 216]  },  // blue
+  { fill: [245, 158, 11], stroke: [180, 115, 8]  },  // amber
+  { fill: [147, 51, 234], stroke: [126, 34, 206] },  // purple
+];
+
 // ─── AI Annotation Viewer ─────────────────────────────────────────────────────
-// Each AI insight is annotated as a tight rectangle + sticky note on the
-// relevant section of the Contoso Cashew Fund fact sheet.
-// Coordinates are from the real extraction JSON (coordinateSystem: originTop).
-// Page 1 dimensions: ~575 wide × ~690 tall (PDF points)
+// Computes the bounding rect of all extracted pairs whose key matches any of
+// the given patterns, padding by 4 pts. Returns null if none match.
+function computeInsightRect(
+  pairs: KeyValuePair[],
+  keyPatterns: string[]
+): { page: number; rect: [number, number, number, number] } | null {
+  const matches = pairs.filter((p) =>
+    keyPatterns.some((pat) => p.key.toLowerCase().includes(pat.toLowerCase()))
+  );
+  if (!matches.length) return null;
+
+  const rects = matches
+    .flatMap((p) => [p.key_rect ?? p.key_bbox, p.value_rect ?? p.value_bbox])
+    .filter(Boolean) as [number, number, number, number][];
+  if (!rects.length) return null;
+
+  const x1 = Math.min(...rects.map((r) => r[0])) - 4;
+  const y1 = Math.min(...rects.map((r) => r[1])) - 4;
+  const x2 = Math.max(...rects.map((r) => r[2])) + 4;
+  const y2 = Math.max(...rects.map((r) => r[3])) + 4;
+  return { page: matches[0].pageNumber || 1, rect: [x1, y1, x2, y2] };
+}
+
 export function AIAnnotationWebViewer({
   analysis,
+  pdfUrl,
+  pairs = [],
   licenseKey = "",
 }: {
   analysis: AIAnalysis;
+  /** Override the document URL. Defaults to the built-in demo fund sheet. */
+  pdfUrl?: string;
+  /** Extracted key-value pairs used to position annotations on the actual document. */
+  pairs?: KeyValuePair[];
   licenseKey?: string;
 }) {
   const viewerRef = useRef<HTMLDivElement>(null);
@@ -297,7 +377,7 @@ export function AIAnnotationWebViewer({
     if (!viewerRef.current || instanceRef.current) return;
     let cancelled = false;
 
-    loadWebViewer(viewerRef.current, licenseKey || ENV_LICENSE_KEY)
+    loadWebViewer(viewerRef.current, licenseKey || ENV_LICENSE_KEY, pdfUrl)
       .then((instance) => {
         if (cancelled) return;
         instanceRef.current = instance;
@@ -307,64 +387,21 @@ export function AIAnnotationWebViewer({
           if (cancelled) return;
           setLoading(false);
 
-          // Advisory insight regions derived from real extraction coordinates
-          // All on Page 1 of the Contoso Cashew Fund fact sheet
-          // Coordinates: [x1, y1, x2, y2] in PDF points, originTop
-          const insightRegions: Array<{
-            page: number;
-            rect: [number, number, number, number];
-            label: string;
-            content: string;
-            fill: [number, number, number];
-            stroke: [number, number, number];
-          }> = [
-            {
-              // Suitability → Risk Level area (right column, top section)
-              // Risk Level key_rect=[375.549, 111.905, 413.223, 122.237]
-              // Covers the risk/objective header block
-              page: 1,
-              rect: [370, 44, 575, 160],
-              label: "AI: Suitability",
-              content: `SUITABILITY: ${analysis.suitability.rating.toUpperCase()}\n\n${analysis.suitability.headline}\n\n${analysis.suitability.detail}`,
-              fill: [34, 197, 94], stroke: [22, 163, 74],
-            },
-            {
-              // Volatility → Risk Statistics section (bottom-left of page 1)
-              // Alpha key_rect=[60.58, 484.321], Beta=[146.539, 484.321], StdDev=[288.179, 484.321]
-              page: 1,
-              rect: [33, 475, 370, 515],
-              label: "AI: Volatility",
-              content: `VOLATILITY: ${analysis.volatility.level.toUpperCase()}\n\n${analysis.volatility.headline}\n\n${analysis.volatility.detail}`,
-              fill: [239, 24, 21], stroke: [180, 10, 5],
-            },
-            {
-              // Long-Term Performance → Performance table (center-left of page 1)
-              // YTD key_rect=[93.029, 200.022], performance rows ~y=200-260
-              page: 1,
-              rect: [33, 192, 370, 260],
-              label: "AI: Long-Term Performance",
-              content: `LONG-TERM PERFORMANCE\n\n${analysis.longTermPerformance.headline}\n\n${analysis.longTermPerformance.detail}`,
-              fill: [37, 99, 235], stroke: [29, 78, 216],
-            },
-            {
-              // Fee Caution → Operating Expenses / Front Load section (right column)
-              // Operating Expenses key_rect=[375.799, 342.622], Max Front Load=[375.799, 367.022]
-              page: 1,
-              rect: [370, 335, 575, 410],
-              label: "AI: Fee Caution",
-              content: `FEE CAUTION: ${analysis.feeCaution.level.toUpperCase()} FEES\n\n${analysis.feeCaution.headline}\n\n${analysis.feeCaution.detail}`,
-              fill: [245, 198, 203], stroke: [239, 24, 21],
-            },
-            {
-              // Diversification → Top Holdings section (bottom-right of page 1)
-              // Top Holdings key_rect=[375.549, 566.005] through ~y=670
-              page: 1,
-              rect: [370, 558, 575, 672],
-              label: "AI: Diversification",
-              content: `DIVERSIFICATION\n\n${analysis.diversification.headline}\n\n${analysis.diversification.detail}`,
-              fill: [147, 51, 234], stroke: [126, 34, 206],
-            },
-          ];
+          // Map each LLM insight to a PDF annotation rect derived from its relatedKeys.
+          // Falls back to stacked positions on page 1 when no matching pairs are found.
+          const insightRegions = (analysis.insights || []).slice(0, 5).map((insight, idx) => {
+            const palette = INSIGHT_PALETTE[idx % INSIGHT_PALETTE.length];
+            const computed = computeInsightRect(pairs, insight.relatedKeys);
+            const fallbackY = 40 + idx * 60;
+            return {
+              page: computed?.page ?? 1,
+              rect: (computed?.rect ?? [30, fallbackY, 560, fallbackY + 45]) as [number, number, number, number],
+              label: `AI: ${insight.category}`,
+              content: `${insight.category.toUpperCase()}${insight.badge ? ` — ${insight.badge}` : ""}\n\n${insight.headline}\n\n${insight.detail}`,
+              fill: palette.fill,
+              stroke: palette.stroke,
+            };
+          });
 
           const annotations: unknown[] = [];
 
@@ -417,6 +454,270 @@ export function AIAnnotationWebViewer({
         </div>
       )}
       <div ref={viewerRef} style={{ width: "100%", height: "100%" }} />
+    </div>
+  );
+}
+
+// ─── Filled Form Viewer ───────────────────────────────────────────────────────
+// ─── Form Comparison Viewer ───────────────────────────────────────────────────
+// Left: browser-native PDF renderer (no WebViewer) — shows the flat original with no fields.
+// Right: single WebViewer instance — shows the same PDF with AcroForm fields + values.
+// Using <object> for the left panel avoids a 3rd concurrent WebViewer WASM worker.
+export function FormCompareWebViewer({
+  originalPdfUrl,
+  filledPdfUrl,
+  licenseKey = "",
+}: {
+  originalPdfUrl: string;
+  filledPdfUrl: string;
+  licenseKey?: string;
+}) {
+  const rightRef = useRef<HTMLDivElement>(null);
+  const rightInstanceRef = useRef<unknown>(null);
+  const [rightLoading, setRightLoading] = useState(true);
+
+  // Convert data URL → blob URL so <object> doesn't hit data-URI length limits
+  const originalBlobUrl = useMemo(() => {
+    if (!originalPdfUrl.startsWith("data:")) return originalPdfUrl;
+    const base64 = originalPdfUrl.split(",")[1];
+    const binary = atob(base64);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+    return URL.createObjectURL(new File([bytes], "original.pdf", { type: "application/pdf" }));
+  }, [originalPdfUrl]);
+
+  useEffect(() => {
+    return () => { URL.revokeObjectURL(originalBlobUrl); };
+  }, [originalBlobUrl]);
+
+  useEffect(() => {
+    if (!rightRef.current || rightInstanceRef.current) return;
+    let cancelled = false;
+    loadCompactViewer(rightRef.current, filledPdfUrl, licenseKey || ENV_LICENSE_KEY, false)
+      .then((inst) => {
+        if (cancelled) return;
+        rightInstanceRef.current = inst;
+        inst.Core.documentViewer.addEventListener("documentLoaded", () => {
+          if (cancelled) return;
+          setRightLoading(false);
+        });
+      })
+      .catch(() => { if (!cancelled) setRightLoading(false); });
+    return () => { cancelled = true; };
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  return (
+    <div className="grid grid-cols-2 divide-x divide-border rounded-xl overflow-hidden border border-border shadow-sm">
+      {/* Left — browser-native PDF viewer: proves there are zero form fields */}
+      <div className="flex flex-col">
+        <div className="flex items-center gap-2 px-4 py-2 bg-muted/60 border-b border-border">
+          <span className="w-2 h-2 rounded-full bg-orange-400 shrink-0" />
+          <span className="text-xs font-semibold text-foreground">Before — Flat PDF</span>
+          <Badge variant="outline" className="ml-auto text-[10px] text-muted-foreground">No fields</Badge>
+        </div>
+        <object
+          data={`${originalBlobUrl}#toolbar=0&view=FitH`}
+          type="application/pdf"
+          style={{ width: "100%", height: "500px", display: "block" }}
+        >
+          <div className="flex items-center justify-center h-full text-xs text-muted-foreground p-4 text-center">
+            Browser PDF viewer unavailable — try Chrome or Edge.
+          </div>
+        </object>
+      </div>
+      {/* Right — WebViewer: shows the PDF with Apryse-created AcroForm fields */}
+      <div className="flex flex-col">
+        <div className="flex items-center gap-2 px-4 py-2 bg-primary/5 border-b border-border">
+          <span className="w-2 h-2 rounded-full bg-green-400 shrink-0" />
+          <span className="text-xs font-semibold text-foreground">After — Interactive Form</span>
+          <Badge className="ml-auto text-[10px]">AcroForm · Editable</Badge>
+        </div>
+        <div className="relative" style={{ height: "500px" }}>
+          {rightLoading && (
+            <div className="absolute inset-0 flex flex-col items-center justify-center bg-card z-10 gap-2">
+              <Loader2 className="w-5 h-5 text-primary animate-spin" />
+              <p className="text-xs text-muted-foreground">Loading interactive form…</p>
+            </div>
+          )}
+          <div ref={rightRef} style={{ width: "100%", height: "100%" }} />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── Filled Form Viewer ───────────────────────────────────────────────────────
+// Flattened result panel — menuButton NOT disabled so user downloads via WebViewer's own UI
+function FlattenedPdfPanel({ pdfUrl, licenseKey = "" }: { pdfUrl: string; licenseKey?: string }) {
+  const viewerRef = useRef<HTMLDivElement>(null);
+  const instanceRef = useRef<unknown>(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    if (!viewerRef.current || instanceRef.current) return;
+    let cancelled = false;
+    import("@pdftron/webviewer").then((mod) => {
+      const WebViewer = mod.default;
+      return WebViewer(
+        {
+          path: "/lib/webviewer",
+          licenseKey: licenseKey || ENV_LICENSE_KEY || undefined,
+          initialDoc: pdfUrl,
+          disabledElements: [
+            "toolbarGroup-Annotate",
+            "toolbarGroup-Shapes",
+            "toolbarGroup-Insert",
+            "toolbarGroup-Measure",
+            "toolbarGroup-Edit",
+            "toolbarGroup-FillAndSign",
+            "toolbarGroup-Forms",
+            // menuButton kept enabled — download lives in it
+          ],
+          isReadOnly: true,
+        },
+        viewerRef.current!
+      ) as unknown as Promise<WVInstance>;
+    }).then((inst) => {
+      if (cancelled) return;
+      instanceRef.current = inst;
+      inst.Core.documentViewer.addEventListener("documentLoaded", () => {
+        if (!cancelled) setLoading(false);
+      });
+    }).catch(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  return (
+    <div className="relative" style={{ height: "520px" }}>
+      {loading && (
+        <div className="absolute inset-0 flex flex-col items-center justify-center bg-card z-10 gap-2">
+          <Loader2 className="w-5 h-5 text-primary animate-spin" />
+          <p className="text-sm text-muted-foreground">Rendering flattened PDF…</p>
+        </div>
+      )}
+      <div ref={viewerRef} style={{ width: "100%", height: "100%" }} />
+    </div>
+  );
+}
+
+export function FilledFormWebViewer({
+  pdfUrl,
+  licenseKey = "",
+}: {
+  pdfUrl: string;
+  licenseKey?: string;
+}) {
+  const viewerRef = useRef<HTMLDivElement>(null);
+  const instanceRef = useRef<WVInstance | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [flattening, setFlattening] = useState(false);
+  const [flattenedUrl, setFlattenedUrl] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  // Revoke blob URL when replaced or on unmount
+  useEffect(() => {
+    return () => { if (flattenedUrl) URL.revokeObjectURL(flattenedUrl); };
+  }, [flattenedUrl]);
+
+  useEffect(() => {
+    if (!viewerRef.current || instanceRef.current) return;
+    let cancelled = false;
+
+    loadWebViewer(viewerRef.current, licenseKey || ENV_LICENSE_KEY, pdfUrl, true)
+      .then((instance) => {
+        if (cancelled) return;
+        instanceRef.current = instance;
+        instance.Core.documentViewer.addEventListener("documentLoaded", () => {
+          if (!cancelled) setLoading(false);
+        });
+      })
+      .catch((err: unknown) => {
+        if (!cancelled) {
+          setError(err instanceof Error ? err.message : "Failed to load WebViewer");
+          setLoading(false);
+        }
+      });
+
+    return () => { cancelled = true; };
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  async function handleFlatten() {
+    const instance = instanceRef.current;
+    if (!instance || flattenedUrl) return;
+    setFlattening(true);
+    try {
+      const xfdfString = await instance.Core.annotationManager.exportAnnotations();
+      const doc = instance.Core.documentViewer.getDocument();
+      const data = await doc.getFileData({ flatten: true, xfdfString });
+      const file = new File([new Uint8Array(data)], "filled-form-flattened.pdf", { type: "application/pdf" });
+      setFlattenedUrl(URL.createObjectURL(file));
+    } catch (err) {
+      console.error("[FilledFormWebViewer] Flatten failed:", err);
+    } finally {
+      setFlattening(false);
+    }
+  }
+
+  if (error) {
+    return (
+      <div className="flex items-center justify-center h-64 rounded-xl bg-muted border border-border text-sm text-muted-foreground">
+        WebViewer unavailable: {error}
+      </div>
+    );
+  }
+
+  return (
+    <div className="rounded-xl overflow-hidden border border-border shadow-sm">
+      {/* Interactive filled form */}
+      <div className="relative" style={{ height: "600px" }}>
+        {loading && (
+          <div className="absolute inset-0 flex flex-col items-center justify-center bg-card z-10 gap-3">
+            <Loader2 className="w-6 h-6 text-primary animate-spin" />
+            <p className="text-sm text-muted-foreground">Loading filled form…</p>
+            <p className="text-xs text-muted-foreground/60">Interactive AcroForm fields ready</p>
+          </div>
+        )}
+        <div ref={viewerRef} style={{ width: "100%", height: "100%" }} />
+      </div>
+
+      {/* Flatten action bar — hidden once flattened */}
+      {!flattenedUrl && (
+        <div className="flex items-center justify-between px-4 py-2.5 border-t border-border bg-muted/40">
+          <p className="text-xs text-muted-foreground">
+            Click any field above to edit. Flatten to burn values into static content.
+          </p>
+          <Button
+            variant="outline"
+            size="sm"
+            className="gap-2 shrink-0"
+            disabled={loading || flattening}
+            onClick={handleFlatten}
+          >
+            {flattening ? (
+              <Loader2 className="w-3.5 h-3.5 animate-spin" />
+            ) : (
+              <Layers className="w-3.5 h-3.5" />
+            )}
+            {flattening ? "Flattening…" : "Flatten PDF"}
+          </Button>
+        </div>
+      )}
+
+      {/* Flattened result — new WebViewer with menu button for native download */}
+      {flattenedUrl && (
+        <>
+          <div className="flex items-center gap-2 px-4 py-2.5 border-t border-border bg-green-500/5">
+            <CheckCircle2 className="w-4 h-4 text-green-500 shrink-0" />
+            <span className="text-xs font-semibold text-foreground">
+              Flattened — all field values are now static page content
+            </span>
+            <span className="text-xs text-muted-foreground ml-2">
+              Use the ⋮ menu inside the viewer to download
+            </span>
+          </div>
+          <FlattenedPdfPanel pdfUrl={flattenedUrl} licenseKey={licenseKey} />
+        </>
+      )}
     </div>
   );
 }

@@ -26,13 +26,13 @@
 - [x] Vitest: analyzeWithAI procedure mock test (2 tests)
 - [x] All 5 tests passing
 
-## OCBC Indonesia Context Section
+## Lending Fulfillment Context Section
 - [x] Token cost math section: Gemini 2.5 Pro pricing, 5,000 doc example, 30% savings calculation
 - [x] Interactive cost calculator: sliders for doc count, avg tokens, reduction % → live cost comparison
 - [x] Security & compliance case: on-premise vs cloud, GDPR/HIPAA/SOC 2, data residency
 - [x] "Why Apryse" narrative section with key value props
 - [x] Visual comparison table: Raw PDF pipeline vs Apryse-structured pipeline
-- [x] Update page title/header to reflect OCBC Indonesia context
+- [x] Update page title/header to reflect lending fulfillment context
 
 ## WebViewer Integration
 - [x] Download Apryse WebViewer package and upload static assets to CDN

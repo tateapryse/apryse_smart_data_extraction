@@ -4,7 +4,8 @@ import { getSessionCookieOptions } from "./_core/cookies";
 import { systemRouter } from "./_core/systemRouter";
 import { publicProcedure, router } from "./_core/trpc";
 import { invokeLLM } from "./_core/llm";
-import { extractPDFData } from "./apryseExtraction";
+import { extractPDFData, detectAndOcr, extractFromToken } from "./apryseExtraction";
+import { detectAndFillForm, flattenAndRemoveOcr } from "./apryseFormRecognition";
 
 export const appRouter = router({
   system: systemRouter,
@@ -32,6 +33,26 @@ export const appRouter = router({
         const result = await extractPDFData(pdfBuffer, input.fileName);
         return result;
       }),
+
+    // Phase 1 of the two-phase flow: detect scanned pages and OCR if needed.
+    detectAndOcr: publicProcedure
+      .input(
+        z.object({
+          pdfBase64: z.string(),
+          fileName: z.string().default("InvestmentFactSheet.pdf"),
+        })
+      )
+      .mutation(async ({ input }) => {
+        const pdfBuffer = Buffer.from(input.pdfBase64, "base64");
+        return detectAndOcr(pdfBuffer, input.fileName);
+      }),
+
+    // Phase 2 of the two-phase flow: extract key-value data from the OCR'd copy.
+    extractFromToken: publicProcedure
+      .input(z.object({ token: z.string() }))
+      .mutation(async ({ input }) => {
+        return extractFromToken(input.token);
+      }),
   }),
 
   // ─── Step 3: Analyze extracted JSON with LLM ─────────────────────────────
@@ -43,9 +64,7 @@ export const appRouter = router({
         })
       )
       .mutation(async ({ input }) => {
-        const systemPrompt = `You are a senior investment advisor at a Singapore private bank. 
-You analyze investment fact sheets and provide clear, professional advisory insights for wealth managers and their clients.
-Always respond with valid JSON matching the exact schema requested. Be specific, data-driven, and use the actual numbers from the extracted data.`;
+        const systemPrompt = `You are an expert document analyst. You analyze any type of document's extracted key-value data and produce clear, actionable insights. Always respond with valid JSON matching the exact schema requested. Be specific and data-driven, referencing actual values from the extracted data.`;
 
         // Build a clean summary of the real extraction data for the LLM
         // The extractedData follows the Apryse generic key-value JSON schema
@@ -66,39 +85,26 @@ Always respond with valid JSON matching the exact schema requested. Be specific,
 
         const extractionSummary = flatPairs.join("\n");
 
-        const userPrompt = `Analyze this investment fact sheet data extracted by Apryse SDK and provide structured advisory insights.
+        const userPrompt = `Analyze the following key-value pairs extracted from a document and produce up to 5 key insights. Choose insight categories appropriate to what the document actually contains — do NOT force fund-specific categories if the document is not a fund fact sheet.
 
-Extracted key-value pairs from the Contoso Cashew Fund fact sheet:
+For each insight, list the exact key names from the extraction data that are most relevant to it — these will be used to visually annotate the document.
+
+Extracted data:
 ${extractionSummary}
 
 Return a JSON object with EXACTLY these fields:
 {
-  "fundName": "Name of the fund",
-  "suitability": {
-    "rating": "Conservative | Moderate | Aggressive",
-    "score": 1-5,
-    "headline": "One-line suitability verdict",
-    "detail": "2-3 sentences on who this fund suits, referencing the risk level, objective, and investor profile"
-  },
-  "volatility": {
-    "level": "Low | Moderate | High | Very High",
-    "headline": "One-line volatility summary",
-    "detail": "2-3 sentences explaining the standard deviation, beta, and what this means for a Singapore HNW investor"
-  },
-  "longTermPerformance": {
-    "headline": "One-line performance verdict",
-    "detail": "2-3 sentences interpreting the 10-year return, since-inception return, and benchmark comparison"
-  },
-  "feeCaution": {
-    "level": "Low | Moderate | High",
-    "headline": "One-line fee assessment",
-    "detail": "2-3 sentences on operating expenses, front load, and total cost impact over a 10-year horizon"
-  },
-  "diversification": {
-    "headline": "One-line diversification assessment",
-    "detail": "2-3 sentences on asset allocation, geographic exposure, and concentration risk"
-  },
-  "summary": "A 50-70 word executive summary that a relationship manager could read aloud to a client in 30 seconds. Include the fund name, key strength, main risk, and a clear recommendation stance."
+  "documentTitle": "Concise name or title for this document (infer from the data)",
+  "insights": [
+    {
+      "category": "Short category label (2-4 words)",
+      "headline": "One-line insight verdict",
+      "detail": "2-3 sentences explaining this insight, citing specific values from the data",
+      "badge": "Short label shown as a badge (e.g. 'High Risk', 'Low Fees', 'Moderate') — use empty string if not applicable",
+      "relatedKeys": ["exact key name from the extraction data"]
+    }
+  ],
+  "summary": "50-70 word executive summary covering the document's main findings and key takeaway."
 }`;
 
         const response = await invokeLLM({
@@ -109,72 +115,30 @@ Return a JSON object with EXACTLY these fields:
           response_format: {
             type: "json_schema",
             json_schema: {
-              name: "investment_analysis",
+              name: "document_analysis",
               strict: true,
               schema: {
                 type: "object",
                 properties: {
-                  fundName: { type: "string" },
-                  suitability: {
-                    type: "object",
-                    properties: {
-                      rating: { type: "string" },
-                      score: { type: "number" },
-                      headline: { type: "string" },
-                      detail: { type: "string" },
+                  documentTitle: { type: "string" },
+                  insights: {
+                    type: "array",
+                    items: {
+                      type: "object",
+                      properties: {
+                        category: { type: "string" },
+                        headline: { type: "string" },
+                        detail: { type: "string" },
+                        badge: { type: "string" },
+                        relatedKeys: { type: "array", items: { type: "string" } },
+                      },
+                      required: ["category", "headline", "detail", "badge", "relatedKeys"],
+                      additionalProperties: false,
                     },
-                    required: ["rating", "score", "headline", "detail"],
-                    additionalProperties: false,
-                  },
-                  volatility: {
-                    type: "object",
-                    properties: {
-                      level: { type: "string" },
-                      headline: { type: "string" },
-                      detail: { type: "string" },
-                    },
-                    required: ["level", "headline", "detail"],
-                    additionalProperties: false,
-                  },
-                  longTermPerformance: {
-                    type: "object",
-                    properties: {
-                      headline: { type: "string" },
-                      detail: { type: "string" },
-                    },
-                    required: ["headline", "detail"],
-                    additionalProperties: false,
-                  },
-                  feeCaution: {
-                    type: "object",
-                    properties: {
-                      level: { type: "string" },
-                      headline: { type: "string" },
-                      detail: { type: "string" },
-                    },
-                    required: ["level", "headline", "detail"],
-                    additionalProperties: false,
-                  },
-                  diversification: {
-                    type: "object",
-                    properties: {
-                      headline: { type: "string" },
-                      detail: { type: "string" },
-                    },
-                    required: ["headline", "detail"],
-                    additionalProperties: false,
                   },
                   summary: { type: "string" },
                 },
-                required: [
-                  "fundName",
-                  "suitability",
-                  "volatility",
-                  "longTermPerformance",
-                  "feeCaution",
-                  "diversification",
-                  "summary",
-                ],
+                required: ["documentTitle", "insights", "summary"],
                 additionalProperties: false,
               },
             },
@@ -188,14 +152,32 @@ Return a JSON object with EXACTLY these fields:
 
         const parsed = typeof content === "string" ? JSON.parse(content) : content;
         return parsed as {
-          fundName: string;
-          suitability: { rating: string; score: number; headline: string; detail: string };
-          volatility: { level: string; headline: string; detail: string };
-          longTermPerformance: { headline: string; detail: string };
-          feeCaution: { level: string; headline: string; detail: string };
-          diversification: { headline: string; detail: string };
+          documentTitle: string;
+          insights: Array<{
+            category: string;
+            headline: string;
+            detail: string;
+            badge: string;
+            relatedKeys: string[];
+          }>;
           summary: string;
         };
+      }),
+  }),
+
+  // ─── Form Recognition & Auto-fill ────────────────────────────────────────
+  // Uses e_Form DataExtractionEngine to detect form fields on the flat IBanking
+  // PDF, creates interactive AcroForm widgets, and fills them with demo data.
+  formRecognition: router({
+    detectAndFill: publicProcedure
+      .input(z.object({ pdfBase64: z.string().optional() }))
+      .mutation(async ({ input }) => {
+        return detectAndFillForm(input.pdfBase64);
+      }),
+    flattenAndStrip: publicProcedure
+      .input(z.object({ filledPdfBase64: z.string() }))
+      .mutation(async ({ input }) => {
+        return flattenAndRemoveOcr(input.filledPdfBase64);
       }),
   }),
 });
